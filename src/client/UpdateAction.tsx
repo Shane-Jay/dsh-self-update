@@ -106,7 +106,7 @@ function StepDot({ state }: { state: string }) {
 const PLAN = [
   { cmd: 'git pull --ff-only', why: '拉取新版本源码' },
   { cmd: 'pnpm install', why: '同步依赖' },
-  { cmd: 'pnpm build', why: '重建前端（dist 不在仓库里，必须重建）' },
+  { cmd: 'pnpm build', why: '重建前端（dist 不入库）' },
 ]
 
 /** 版本对照块：当前 → 目标 */
@@ -305,7 +305,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                 background: T.layer2, border: `1px solid ${T.border}`, color: T.err,
               }}>
                 {status.dirty
-                  ? `harness 工作区有未提交改动，更新已锁住——不替你丢改动。先处理 ${status.repoRoot} 的 git status。`
+                  ? `工作区有未提交改动，更新已锁定——不会动你的改动。先处理 ${status.repoRoot} 的 git status。`
                   : '本地有远端没有的提交，无法快进更新。'}
               </div>
             )}
@@ -346,7 +346,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                   </div>
                 ))}
                 {installing && (
-                  <div style={{ color: T.text3, marginTop: 8 }}>更新期间请勿退出 DSH（关窗口没关系）。</div>
+                  <div style={{ color: T.text3, marginTop: 8 }}>更新期间请勿退出 DSH（关窗无妨）。</div>
                 )}
               </div>
             )}
@@ -364,7 +364,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
             {needsRestart && (
               <div style={{ marginTop: 16, color: T.text2 }}>
-                更新已装好。重启 DSH 服务后生效——服务会自动重新拉起，页面随后刷新。
+                更新已装好，重启后生效——服务自动拉起，页面随后刷新。
               </div>
             )}
 
