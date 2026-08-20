@@ -59,7 +59,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Shane-Jay/dsh-self-update"
+    "url": "git+https://github.com/Shane-Jay/dsh-self-update.git"
   },
   "keywords": [
     "dsh-plugin",
