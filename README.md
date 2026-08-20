@@ -1,81 +1,108 @@
+<div align="center">
+
 # dsh-self-update
 
-In-app self-update for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) **git-source installs** — check, one-click update (`git pull --ff-only` → `pnpm install` → `pnpm build`), failure rollback, and a restart contract — plus an **optional native macOS shell** (WKWebView, no Electron) with a "Check for Updates…" menu item.
+**English** | [简体中文](README.zh-CN.md)
 
-DeepSeek Harness 应用内自更新插件（git 源码安装版）：检查 / 一键更新 / 失败回滚 / 重启闭环，附可选的原生 macOS 外壳。
+In-app self-update for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) git-source installs — with an optional native macOS shell.
 
-> **适用范围**：以 git 源码方式安装并运行 harness（`git clone` + `pnpm dsh web`）的用户。
-> npm 全局安装（`npm i -g @deepseek-ai/dsh`）的用户请使用 npm 系的更新器（如 dsh-update-checker）——本插件检测不到 git 工作副本时会自动隐藏。
+[![npm version](https://img.shields.io/npm/v/dsh-self-update)](https://www.npmjs.com/package/dsh-self-update)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![DSH core](https://img.shields.io/badge/DSH-%3E%3D%200.1.0--rc.5-5B4CF0?style=flat-square)](https://www.npmjs.com/package/@deepseek-ai/dsh)
 
-**我只用 Web UI（任何平台）** → [§ 安装插件](#安装插件任何平台)
-**我用 macOS，想要原生 App** → [§ macOS 外壳（可选）](#macos-外壳可选)
+<img src="docs/assets/update-panel.png" alt="Update panel: current vs. new version, the three steps about to run, and a one-click Update button" width="760">
 
-## 功能
+</div>
 
-- 后台静默检查（默认 6 小时一轮）+ 手动检查（设置页「DSH 版本」行 / macOS 菜单）
-- 有新版本时侧栏浮出一行「新版本 x.y.z ›」，点开更新页：版本对照、将执行的三步、开始/忽略
-- 更新三步实时进度；失败自动记录并可一键回滚到更新前的提交
-- 装完一键重启：进程以**退出码 75** 退出，由 supervisor / macOS 外壳自动拉起
-- 工作区有未提交改动或本地分叉时拒绝更新（不替你丢改动）
+## What is this?
 
-## 安装插件（任何平台）
+If you run DeepSeek Harness **from a git checkout** (`git clone` + `pnpm dsh web`) — the way most self-hosted setups do — there is no built-in way to update it. Every release means manually running `git pull`, `pnpm install`, `pnpm build`, then restarting the service, and if anything breaks you dig out the old commit by hand.
+
+**dsh-self-update turns that whole cycle into a button.** It is a harness plugin that:
+
+- **checks quietly in the background** (every 6 h by default) and on demand, from the settings page or the macOS menu bar;
+- shows a **"new version" entry in the sidebar** when there is something to install — clicking it opens an update panel with a version comparison and exactly the three commands about to run;
+- **installs in one click**: `git pull --ff-only` → `pnpm install` → `pnpm build`, with live per-step progress;
+- **refuses to touch a dirty or diverged working tree** — it will never discard your local changes;
+- **rolls back in one click** if a step fails (and ships a CLI fallback for when the UI itself is down);
+- **restarts the service** through a simple contract: the process exits with **code 75**, and your supervisor — systemd, PM2, or the bundled macOS shell — brings it back up.
+
+**Not for you if** you installed dsh via `npm i -g @deepseek-ai/dsh`: there is no git working copy to update, so this plugin hides itself entirely. Use an npm-based updater such as `dsh-update-checker` instead.
+
+## Install (any platform)
 
 ```bash
-cd <deepseek-harness>
+cd <your-deepseek-harness-checkout>
 pnpm dsh plugin --profile web add dsh-self-update
 ```
 
-重启 dsh 服务生效。无需其他配置；插件自动以进程 cwd 作为 harness 工作副本（可用插件 config `repoRoot` 覆盖）。
+Restart the dsh service once and you are done. No configuration needed — the plugin uses the process working directory as the harness checkout (override with the plugin config `repoRoot` if yours differs).
 
-让「立即重启」按钮闭环（进程退出码 75 = 请求重启）：
+### Closing the restart loop
 
-- **systemd**：`RestartForceExitStatus=75`
-- **PM2**：`autorestart: true`（默认即可）
-- **macOS 外壳**：内置，见下节
-- 裸终端：点完重启自己再 `pnpm dsh web` 一次
+The **Restart now** button makes the process exit with **code 75** ("please restart me"). Teach your supervisor to honor it:
 
-## macOS 外壳（可选）
+| Runner | Config |
+|---|---|
+| systemd | `RestartForceExitStatus=75` |
+| PM2 | `autorestart: true` (the default) |
+| macOS shell (below) | built in |
+| bare terminal | just run `pnpm dsh web` again |
 
-原生 Swift + WKWebView 的 DSH.app：点图标即界面，关窗不停服务，⌘Q 才停；
-菜单「DSH → 检查更新…」直接弹出应用内更新页；服务以 75 退出时自动拉起并重载页面。
+## macOS shell (optional)
+
+A native Swift + WKWebView app (no Electron) that owns the dsh service: click the icon to open the UI, closing the window keeps the service running, ⌘Q stops it. It adds a **"Check for Updates…"** menu item that opens the in-app update panel, and it automatically relaunches the service when it exits with code 75.
 
 ```bash
-node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具；默认输出 ~/Applications/DSH.app
+node macapp/build-mac-app.mjs        # requires Xcode command line tools
+# outputs ~/Applications/DSH.app
 ```
 
-首次打开需右键 → 打开（ad-hoc 签名，未做 Apple 公证）。
+First launch: right-click → Open (the app is ad-hoc signed, not notarized).
 
-## 与同类项目的区别
+## How it compares
 
-| | 更新对象 | 平台 | 自动重启 |
+| | Updates | Platforms | Auto-restart |
 |---|---|---|---|
-| dsh-update-checker | npm 包 | 重启仅 Windows | ✅(Win) |
-| dsh-update-copilot | 插件为主，core 只报告 | 全平台 | ❌ |
-| **dsh-self-update** | **harness git 工作副本** | **全平台（重启含 macOS/Linux）** | **✅（退出码 75 契约）** |
+| `dsh-update-checker` | npm packages | restart is Windows-only | ✅ (Win) |
+| `dsh-update-copilot` | plugins; core is report-only | all | ❌ |
+| **`dsh-self-update`** | **the harness git checkout itself** | **all (restart incl. macOS/Linux)** | **✅ (exit-code 75 contract)** |
 
-## 接口契约
+The exit-code-75 restart contract is the piece the community has been asking the harness core for (see upstream discussions [#1231](https://github.com/deepseek-ai/deepseek-harness/discussions/1231) and [#2717](https://github.com/deepseek-ai/deepseek-harness/discussions/2717)) — this plugin is a working implementation of it.
 
-- HTTP：`/self-update/api/update/{status,check,install,rollback,restart}`（写路由要求 JSON content-type + 本机 Origin）
-- 弹层事件：`window` 上派发 `dsh-self-update:open`（`detail.check: true` = 打开即检查）——macOS 外壳菜单走的就是它
-- 重启：进程退出码 **75** = 请求重启（呼应上游 [#1231](https://github.com/deepseek-ai/deepseek-harness/discussions/1231) / [#2717](https://github.com/deepseek-ai/deepseek-harness/discussions/2717) 对统一重启契约的讨论）
-- 状态落盘：`~/.dsh-self-update/update-state.json`
+## Interface contract
 
-## 兜底
+- **HTTP** — `/self-update/api/update/{status,check,install,rollback,restart}`. Write routes require `Content-Type: application/json` and a local `Origin` (CSRF line of defense).
+- **Panel event** — dispatch `dsh-self-update:open` on `window` (`detail: { check: true }` to check immediately). This is exactly what the macOS menu item does via `evaluateJavaScript`.
+- **Restart** — process exit code **75** means "restart requested". Anything else is a crash.
+- **State** — persisted at `~/.dsh-self-update/update-state.json`.
 
-更新后 dsh 起不来（UI 连同回滚按钮一起没了）时，从命令行退回：
+## When the UI is gone
 
-```bash
-node scripts/rollback-harness.mjs        # 目标取落盘的 previousSha；--sha <commit> 可指定
-```
-
-## 开发
-
-Sibling 布局（与 dsh 插件生态同款）：本仓库须与 `deepseek-harness` 检出为同级目录，`@deepseek-ai/*` 依赖是 `link:../deepseek-harness/...`。
+If an update leaves dsh unable to boot (plugin/core seam breakage), the Web UI — rollback button included — is gone with it. Fall back to the CLI:
 
 ```bash
-pnpm install && pnpm typecheck && pnpm test && pnpm build
+node scripts/rollback-harness.mjs          # target = previousSha from the state file
+node scripts/rollback-harness.mjs --sha <commit>   # or pick a commit yourself
 ```
+
+The updater records `previousSha` before every install precisely for this moment.
+
+## Development
+
+Sibling layout, same as the rest of the dsh plugin ecosystem: this repo must be checked out **next to** `deepseek-harness` — the `@deepseek-ai/*` dev dependencies are `link:../deepseek-harness/...`.
+
+```bash
+pnpm install
+pnpm typecheck && pnpm test && pnpm build
+```
+
+The updater test suite runs against real (offline) git repositories; only the install/build commands are stubbed.
 
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
