@@ -1,0 +1,62 @@
+# 本仓库的 @deepseek-ai/* 依赖是相对 link:../deepseek-harness/...，所以必须把
+# deepseek-harness 检出成本仓库的**同级目录**，否则 pnpm install 直接解析失败。
+# typecheck 需要 harness 构建出 lib/types（源码里没有 .d.ts）；测试只需要 git，
+# 不依赖 harness 的任何构建产物。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: typecheck + build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout dsh-self-update
+        uses: actions/checkout@v4
+        with:
+          path: dsh-self-update
+
+      - name: Checkout deepseek-harness (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: master
+          path: deepseek-harness
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            dsh-self-update/pnpm-lock.yaml
+            deepseek-harness/pnpm-lock.yaml
+
+      - name: Build deepseek-harness types
+        working-directory: deepseek-harness
+        timeout-minutes: 25
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm run build:lib
+
+      - name: Install
+        working-directory: dsh-self-update
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck
+        working-directory: dsh-self-update
+        run: pnpm typecheck
+
+      - name: Build
+        working-directory: dsh-self-update
+        run: pnpm build
+
+      - name: Test
+        working-directory: dsh-self-update
+        run: pnpm test
