@@ -8,6 +8,10 @@
 import AppKit
 import WebKit
 
+// 菜单/遮罩文案跟随系统语言：中文环境用中文，其余用英文。
+let isZhLocale = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
+func L(_ zh: String, _ en: String) -> String { isZhLocale ? zh : en }
+
 // MARK: - Config (baked into Info.plist at build time)
 
 struct AppConfig {
@@ -101,7 +105,7 @@ final class ServerController {
         let fm = FileManager.default
         fm.createFile(atPath: cfg.logPath, contents: nil)
         guard let log = FileHandle(forWritingAtPath: cfg.logPath) else {
-            state = .failed("无法写入日志文件 \(cfg.logPath)")
+            state = .failed(L("无法写入日志文件 \(cfg.logPath)", "Cannot write log file \(cfg.logPath)"))
             return
         }
 
@@ -131,7 +135,7 @@ final class ServerController {
                     self.state = .restarting
                     self.spawn()
                 } else if requested {
-                    self.state = .failed("更新后重启失败：服务启动不到 10 秒就退出了")
+                    self.state = .failed(L("更新后重启失败：服务启动不到 10 秒就退出了", "Restart after update failed: the service exited within 10 seconds"))
                 } else {
                     self.state = .exited
                 }
@@ -141,7 +145,7 @@ final class ServerController {
         do {
             try p.run()
         } catch {
-            state = .failed("无法启动 node：\(error.localizedDescription)")
+            state = .failed(L("无法启动 node：\(error.localizedDescription)", "Failed to launch node: \(error.localizedDescription)"))
             return
         }
 
@@ -160,7 +164,7 @@ final class ServerController {
                     self.state = .ready
                 } else if Date() > self.deadline {
                     timer.invalidate()
-                    self.state = .failed("启动超时（120 秒仍未监听 \(self.cfg.port)）")
+                    self.state = .failed(L("启动超时（120 秒仍未监听 \(self.cfg.port)）", "Startup timed out (port \(self.cfg.port) not listening after 120 s)"))
                 }
             }
         }
@@ -195,8 +199,8 @@ final class StatusOverlay: NSView {
     private let title = NSTextField(labelWithString: "")
     private let detail = NSTextView()
     private let scroll = NSScrollView()
-    private let retry = NSButton(title: "重试", target: nil, action: nil)
-    private let openLog = NSButton(title: "打开日志", target: nil, action: nil)
+    private let retry = NSButton(title: L("重试", "Retry"), target: nil, action: nil)
+    private let openLog = NSButton(title: L("打开日志", "Open Log"), target: nil, action: nil)
 
     var onRetry: (() -> Void)?
     var onOpenLog: (() -> Void)?
@@ -353,13 +357,13 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
     func apply(state: ServerController.State) {
         switch state {
         case .checking:
-            overlay.show(busy: true, text: "正在检查 DSH 服务…", log: nil)
+            overlay.show(busy: true, text: L("正在检查 DSH 服务…", "Checking DSH service…"), log: nil)
         case .starting:
             loadedOnce = false
-            overlay.show(busy: true, text: "正在启动 DSH 服务（首次编译约 5–20 秒）…", log: nil)
+            overlay.show(busy: true, text: L("正在启动 DSH 服务（首次编译约 5–20 秒）…", "Starting DSH service (first compile takes ~5–20 s)…"), log: nil)
         case .restarting:
             loadedOnce = false
-            overlay.show(busy: true, text: "更新已装好，正在重启 DSH 服务…", log: nil)
+            overlay.show(busy: true, text: L("更新已装好，正在重启 DSH 服务…", "Update installed, restarting DSH service…"), log: nil)
         case .ready:
             overlay.isHidden = true
             if !loadedOnce {
@@ -368,10 +372,10 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
             }
         case .failed(let msg):
             loadedOnce = false
-            overlay.show(busy: false, text: "DSH 服务启动失败：\(msg)", log: server.logTail())
+            overlay.show(busy: false, text: L("DSH 服务启动失败：\(msg)", "DSH service failed to start: \(msg)"), log: server.logTail())
         case .exited:
             loadedOnce = false
-            overlay.show(busy: false, text: "DSH 服务已退出", log: server.logTail())
+            overlay.show(busy: false, text: L("DSH 服务已退出", "DSH service exited"), log: server.logTail())
         }
     }
 
@@ -407,7 +411,7 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         loadedOnce = false
-        overlay.show(busy: false, text: "页面加载失败：\(error.localizedDescription)", log: server.logTail())
+        overlay.show(busy: false, text: L("页面加载失败：\(error.localizedDescription)", "Page failed to load: \(error.localizedDescription)"), log: server.logTail())
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -503,51 +507,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(item("关于 DSH", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
-        appMenu.addItem(item("检查更新…", #selector(MainWindowController.checkForUpdates), "", target: windowController))
+        appMenu.addItem(item(L("关于 DSH", "About DSH"), #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""))
+        appMenu.addItem(item(L("检查更新…", "Check for Updates…"), #selector(MainWindowController.checkForUpdates), "", target: windowController))
         appMenu.addItem(.separator())
-        appMenu.addItem(item("隐藏 DSH", #selector(NSApplication.hide(_:)), "h"))
-        appMenu.addItem(item("隐藏其他", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
+        appMenu.addItem(item(L("隐藏 DSH", "Hide DSH"), #selector(NSApplication.hide(_:)), "h"))
+        appMenu.addItem(item(L("隐藏其他", "Hide Others"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]))
         appMenu.addItem(.separator())
-        appMenu.addItem(item("退出 DSH（并停止服务）", #selector(NSApplication.terminate(_:)), "q"))
+        appMenu.addItem(item(L("退出 DSH（并停止服务）", "Quit DSH (stops the service)"), #selector(NSApplication.terminate(_:)), "q"))
         appItem.submenu = appMenu
         main.addItem(appItem)
 
         let fileItem = NSMenuItem()
-        let fileMenu = NSMenu(title: "文件")
-        fileMenu.addItem(item("关闭窗口（服务继续后台运行）", #selector(NSWindow.performClose(_:)), "w"))
+        let fileMenu = NSMenu(title: L("文件", "File"))
+        fileMenu.addItem(item(L("关闭窗口（服务继续后台运行）", "Close Window (service keeps running)"), #selector(NSWindow.performClose(_:)), "w"))
         fileItem.submenu = fileMenu
         main.addItem(fileItem)
 
         let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "编辑")
-        editMenu.addItem(item("撤销", Selector(("undo:")), "z"))
-        editMenu.addItem(item("重做", Selector(("redo:")), "z", [.command, .shift]))
+        let editMenu = NSMenu(title: L("编辑", "Edit"))
+        editMenu.addItem(item(L("撤销", "Undo"), Selector(("undo:")), "z"))
+        editMenu.addItem(item(L("重做", "Redo"), Selector(("redo:")), "z", [.command, .shift]))
         editMenu.addItem(.separator())
-        editMenu.addItem(item("剪切", #selector(NSText.cut(_:)), "x"))
-        editMenu.addItem(item("拷贝", #selector(NSText.copy(_:)), "c"))
-        editMenu.addItem(item("粘贴", #selector(NSText.paste(_:)), "v"))
-        editMenu.addItem(item("全选", #selector(NSText.selectAll(_:)), "a"))
+        editMenu.addItem(item(L("剪切", "Cut"), #selector(NSText.cut(_:)), "x"))
+        editMenu.addItem(item(L("拷贝", "Copy"), #selector(NSText.copy(_:)), "c"))
+        editMenu.addItem(item(L("粘贴", "Paste"), #selector(NSText.paste(_:)), "v"))
+        editMenu.addItem(item(L("全选", "Select All"), #selector(NSText.selectAll(_:)), "a"))
         editItem.submenu = editMenu
         main.addItem(editItem)
 
         let viewItem = NSMenuItem()
-        let viewMenu = NSMenu(title: "显示")
-        viewMenu.addItem(item("重新载入页面", #selector(MainWindowController.reload), "r", target: windowController))
+        let viewMenu = NSMenu(title: L("显示", "View"))
+        viewMenu.addItem(item(L("重新载入页面", "Reload Page"), #selector(MainWindowController.reload), "r", target: windowController))
         viewMenu.addItem(.separator())
-        viewMenu.addItem(item("放大", #selector(MainWindowController.zoomIn), "+", target: windowController))
-        viewMenu.addItem(item("缩小", #selector(MainWindowController.zoomOut), "-", target: windowController))
-        viewMenu.addItem(item("实际大小", #selector(MainWindowController.zoomReset), "0", target: windowController))
+        viewMenu.addItem(item(L("放大", "Zoom In"), #selector(MainWindowController.zoomIn), "+", target: windowController))
+        viewMenu.addItem(item(L("缩小", "Zoom Out"), #selector(MainWindowController.zoomOut), "-", target: windowController))
+        viewMenu.addItem(item(L("实际大小", "Actual Size"), #selector(MainWindowController.zoomReset), "0", target: windowController))
         viewMenu.addItem(.separator())
-        viewMenu.addItem(item("进入全屏", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
+        viewMenu.addItem(item(L("进入全屏", "Enter Full Screen"), #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
 
         let svcItem = NSMenuItem()
-        let svcMenu = NSMenu(title: "服务")
-        svcMenu.addItem(item("重启 DSH 服务", #selector(restartServer), "r", [.command, .shift], target: self))
-        svcMenu.addItem(item("在浏览器中打开", #selector(MainWindowController.openInBrowser), "o", [.command, .shift], target: windowController))
-        svcMenu.addItem(item("打开服务日志", #selector(openLog), "l", [.command, .shift], target: self))
+        let svcMenu = NSMenu(title: L("服务", "Service"))
+        svcMenu.addItem(item(L("重启 DSH 服务", "Restart DSH Service"), #selector(restartServer), "r", [.command, .shift], target: self))
+        svcMenu.addItem(item(L("在浏览器中打开", "Open in Browser"), #selector(MainWindowController.openInBrowser), "o", [.command, .shift], target: windowController))
+        svcMenu.addItem(item(L("打开服务日志", "Open Service Log"), #selector(openLog), "l", [.command, .shift], target: self))
         svcItem.submenu = svcMenu
         main.addItem(svcItem)
 

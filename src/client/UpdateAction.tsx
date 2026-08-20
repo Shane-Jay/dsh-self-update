@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchUpdateStatus, postUpdate, type UpdateStatus } from './api.ts'
+import { stepLabel, tr } from './i18n.ts'
 
 const DISMISS_KEY = 'dsh-self-update.dismissedSha'
 
@@ -60,10 +61,11 @@ const KEYFRAMES = `
  * 失败 = ✕，跳过 = 虚线圈。三态共用同一个 16px 位置，不会跳版。
  */
 function StepDot({ state }: { state: string }) {
+  const t = tr()
   const box: React.CSSProperties = { width: 16, height: 16, flex: 'none', display: 'block' }
   if (state === 'running') {
     return (
-      <svg style={{ ...box, animation: 'dsu-spin 900ms linear infinite' }} viewBox="0 0 16 16" fill="none" aria-label="执行中">
+      <svg style={{ ...box, animation: 'dsu-spin 900ms linear infinite' }} viewBox="0 0 16 16" fill="none" aria-label={t.aria.running}>
         <circle cx="8" cy="8" r="6.5" stroke={T.border} strokeWidth="1.6" />
         <path d="M8 1.5a6.5 6.5 0 0 1 6.5 6.5" stroke={T.brand} strokeWidth="1.6" strokeLinecap="round" />
       </svg>
@@ -71,7 +73,7 @@ function StepDot({ state }: { state: string }) {
   }
   if (state === 'ok') {
     return (
-      <svg style={box} viewBox="0 0 16 16" fill="none" aria-label="完成">
+      <svg style={box} viewBox="0 0 16 16" fill="none" aria-label={t.aria.ok}>
         <circle cx="8" cy="8" r="6.5" stroke={T.ok} strokeWidth="1.6" />
         <path
           d="M4.8 8.2l2.2 2.2 4.2-4.4"
@@ -87,14 +89,14 @@ function StepDot({ state }: { state: string }) {
   }
   if (state === 'failed') {
     return (
-      <svg style={box} viewBox="0 0 16 16" fill="none" aria-label="失败">
+      <svg style={box} viewBox="0 0 16 16" fill="none" aria-label={t.aria.failed}>
         <circle cx="8" cy="8" r="6.5" stroke={T.err} strokeWidth="1.6" />
         <path d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" stroke={T.err} strokeWidth="1.6" strokeLinecap="round" />
       </svg>
     )
   }
   return (
-    <svg style={box} viewBox="0 0 16 16" fill="none" aria-label={state === 'skipped' ? '已跳过' : '待执行'}>
+    <svg style={box} viewBox="0 0 16 16" fill="none" aria-label={state === 'skipped' ? t.aria.skipped : t.aria.pending}>
       <circle
         cx="8" cy="8" r="6.5" stroke={T.border} strokeWidth="1.6"
         strokeDasharray={state === 'skipped' ? '3 3' : undefined}
@@ -104,13 +106,14 @@ function StepDot({ state }: { state: string }) {
 }
 
 const PLAN = [
-  { cmd: 'git pull --ff-only', why: '拉取新版本源码' },
-  { cmd: 'pnpm install', why: '同步依赖' },
-  { cmd: 'pnpm build', why: '重建前端（dist 不入库）' },
-]
+  { cmd: 'git pull --ff-only', why: 'pull' },
+  { cmd: 'pnpm install', why: 'install' },
+  { cmd: 'pnpm build', why: 'build' },
+] as const
 
 /** 版本对照块：当前 → 目标 */
 function VersionCompare({ status }: { status: UpdateStatus }) {
+  const t = tr()
   const col: React.CSSProperties = { flex: '1 1 0', minWidth: 0 }
   return (
     <div style={{
@@ -118,7 +121,7 @@ function VersionCompare({ status }: { status: UpdateStatus }) {
       background: T.layer2, border: `1px solid ${T.border}`, borderRadius: 10, padding: '12px 14px',
     }}>
       <div style={col}>
-        <div style={{ color: T.text3, fontSize: 12 }}>当前版本</div>
+        <div style={{ color: T.text3, fontSize: 12 }}>{t.current}</div>
         <div style={{ color: T.text, fontSize: 17, fontWeight: 600, margin: '2px 0' }}>{status.current.version}</div>
         <div style={{ color: T.text3, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {status.current.shortSha} · {status.branch}
@@ -126,12 +129,12 @@ function VersionCompare({ status }: { status: UpdateStatus }) {
       </div>
       <div style={{ alignSelf: 'center', color: T.text3, fontSize: 18 }}>→</div>
       <div style={col}>
-        <div style={{ color: T.text3, fontSize: 12 }}>新版本</div>
+        <div style={{ color: T.text3, fontSize: 12 }}>{t.newVersion}</div>
         <div style={{ color: T.brand, fontSize: 17, fontWeight: 600, margin: '2px 0' }}>
           {status.available?.version ?? '—'}
         </div>
         <div style={{ color: T.text3, fontSize: 12 }}>
-          {status.available !== undefined ? `落后 ${status.available.behind} 个提交` : ''}
+          {status.available !== undefined ? t.behind(status.available.behind) : ''}
         </div>
       </div>
     </div>
@@ -206,13 +209,14 @@ export function UpdateAction({ wide }: { wide: boolean }) {
     setOpen(false)
   }
 
+  const t = tr()
   const rowLabel = needsRestart
-    ? '更新已装好'
+    ? t.rowInstalled
     : installing
-      ? '正在更新…'
+      ? t.rowInstalling
       : failed
-        ? '更新失败'
-        : `新版本 ${available?.version ?? ''}`
+        ? t.rowFailed
+        : t.rowNew(available?.version ?? '')
 
   return (
     <>
@@ -258,7 +262,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="DSH 更新"
+          aria-label={t.dialogTitle}
           onClick={() => { if (!installing) setOpen(false) }}
           style={{
             position: 'fixed', inset: 0, zIndex: 1200, // harness 弹窗层是 1000，必须压过它
@@ -277,12 +281,12 @@ export function UpdateAction({ wide }: { wide: boolean }) {
           >
             <style>{KEYFRAMES}</style>
             <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
-              <strong style={{ fontSize: 16, fontWeight: 600, flex: 1 }}>DSH 更新</strong>
+              <strong style={{ fontSize: 16, fontWeight: 600, flex: 1 }}>{t.dialogTitle}</strong>
               <button
                 type="button"
                 onClick={() => { setOpen(false) }}
                 style={{ ...BTN, border: 'none', padding: '2px 8px', fontSize: 18, color: T.text3 }}
-                aria-label="关闭"
+                aria-label={t.close}
               >
                 ×
               </button>
@@ -292,7 +296,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
             {available?.subject !== undefined && available.subject !== '' && (
               <div style={{ color: T.text2, marginTop: 12 }}>
-                <span style={{ color: T.text3 }}>最新提交　</span>{available.subject}
+                <span style={{ color: T.text3 }}>{t.latestCommit}　</span>{available.subject}
                 {available.committedAt !== undefined && (
                   <span style={{ color: T.text3 }}>　·　{new Date(available.committedAt).toLocaleString()}</span>
                 )}
@@ -304,9 +308,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                 marginTop: 12, padding: '10px 12px', borderRadius: 8,
                 background: T.layer2, border: `1px solid ${T.border}`, color: T.err,
               }}>
-                {status.dirty
-                  ? `工作区有未提交改动，更新已锁定——不会动你的改动。先处理 ${status.repoRoot} 的 git status。`
-                  : '本地有远端没有的提交，无法快进更新。'}
+                {status.dirty ? t.dirtyBlocked(status.repoRoot) : t.diverged}
               </div>
             )}
 
@@ -314,10 +316,10 @@ export function UpdateAction({ wide }: { wide: boolean }) {
             {upToDate && (
               <div style={{ marginTop: 16, color: T.text2 }}>
                 {busy
-                  ? '正在检查更新…'
+                  ? t.checking
                   : status.lastCheckedAt !== undefined
-                    ? `已是最新版本　·　上次检查 ${new Date(status.lastCheckedAt).toLocaleString()}`
-                    : '已是最新版本'}
+                    ? t.upToDateAt(new Date(status.lastCheckedAt).toLocaleString())
+                    : t.upToDate}
               </div>
             )}
 
@@ -329,7 +331,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                     <StepDot state="pending" />
                     <code style={{ color: T.text, fontSize: 12, flex: 'none' }}>{p.cmd}</code>
                     <span style={{ color: T.text3, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {p.why}
+                      {t.planWhy[p.why]}
                     </span>
                   </div>
                 ))}
@@ -342,11 +344,11 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                 {status.steps.map((s) => (
                   <div key={s.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
                     <StepDot state={s.state} />
-                    <span style={{ color: s.state === 'pending' ? T.text3 : T.text2 }}>{s.label}</span>
+                    <span style={{ color: s.state === 'pending' ? T.text3 : T.text2 }}>{stepLabel(s.id, s.label)}</span>
                   </div>
                 ))}
                 {installing && (
-                  <div style={{ color: T.text3, marginTop: 8 }}>更新期间请勿退出 DSH（关窗无妨）。</div>
+                  <div style={{ color: T.text3, marginTop: 8 }}>{t.dontQuit}</div>
                 )}
               </div>
             )}
@@ -364,42 +366,42 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
             {needsRestart && (
               <div style={{ marginTop: 16, color: T.text2 }}>
-                更新已装好，重启后生效——服务自动拉起，页面随后刷新。
+                {t.installedRestart}
               </div>
             )}
 
             <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
               {needsRestart ? (
                 <button type="button" style={BTN_PRIMARY} disabled={busy} onClick={() => { void act('restart') }}>
-                  立即重启
+                  {t.restartNow}
                 </button>
               ) : installing ? (
-                <span style={{ color: T.text3, alignSelf: 'center' }}>更新中…</span>
+                <span style={{ color: T.text3, alignSelf: 'center' }}>{t.updating}</span>
               ) : failed ? (
                 <>
                   {status.previousSha !== undefined && (
                     <button type="button" style={BTN} disabled={busy} onClick={() => { void act('rollback') }}>
-                      回滚到 {status.previousSha.slice(0, 9)}
+                      {t.rollbackTo(status.previousSha.slice(0, 9))}
                     </button>
                   )}
                   <button type="button" style={BTN_PRIMARY} disabled={busy} onClick={() => { void act('install') }}>
-                    重试
+                    {t.retry}
                   </button>
                 </>
               ) : upToDate ? (
                 <button type="button" style={BTN_PRIMARY} disabled={busy} onClick={() => { void act('check') }}>
-                  {busy ? '检查中…' : '重新检查'}
+                  {busy ? t.checkingBtn : t.recheck}
                 </button>
               ) : (
                 <>
-                  <button type="button" style={BTN} disabled={busy} onClick={dismiss}>忽略此版本</button>
+                  <button type="button" style={BTN} disabled={busy} onClick={dismiss}>{t.dismissBtn}</button>
                   <button
                     type="button"
                     style={{ ...BTN_PRIMARY, opacity: blocked ? 0.5 : 1 }}
                     disabled={busy || blocked}
                     onClick={() => { void act('install') }}
                   >
-                    开始更新
+                    {t.installBtn}
                   </button>
                 </>
               )}

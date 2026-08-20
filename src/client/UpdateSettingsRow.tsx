@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { fetchUpdateStatus, postUpdate, type UpdateStatus } from './api.ts'
 import { openUpdatePanel } from './UpdateAction.tsx'
+import { tr } from './i18n.ts'
 
 const T = {
   text: 'var(--dsw-alias-label-primary)',
@@ -34,13 +35,14 @@ export function UpdateSettingsRow() {
     }
   }
 
+  const t = tr()
   const hasUpdate = st.available !== undefined
 
   const sub = st.available !== undefined
-    ? `有新版本 ${st.available.version}（落后 ${st.available.behind} 个提交）`
+    ? t.settingsNew(st.available.version, st.available.behind)
     : st.lastCheckedAt !== undefined
-      ? `已是最新　·　上次检查 ${new Date(st.lastCheckedAt).toLocaleString()}`
-      : '已是最新'
+      ? t.settingsUpToDateAt(new Date(st.lastCheckedAt).toLocaleString())
+      : t.settingsUpToDate
 
   return (
     <div style={{
@@ -48,7 +50,7 @@ export function UpdateSettingsRow() {
       padding: '16px 0', borderBottom: `1px solid ${T.border}`,
     }}>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, paddingRight: 48 }}>
-        <div style={{ fontSize: 14, lineHeight: '22px', color: T.text }}>DSH 版本</div>
+        <div style={{ fontSize: 14, lineHeight: '22px', color: T.text }}>{t.settingsTitle}</div>
         <div style={{ fontSize: 13, lineHeight: '20px', color: st.available !== undefined ? T.brand : T.text3 }}>
           {st.current.version}　·　{sub}
         </div>
@@ -65,7 +67,7 @@ export function UpdateSettingsRow() {
           font: 'inherit', fontSize: 14, lineHeight: '22px', cursor: checking ? 'default' : 'pointer',
         }}
       >
-        {checking ? '检查中…' : hasUpdate ? '前往更新' : '检查更新'}
+        {checking ? t.checkingBtn : hasUpdate ? t.goUpdate : t.checkBtn}
       </button>
     </div>
   )
