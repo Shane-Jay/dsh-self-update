@@ -22,7 +22,7 @@ If you run DeepSeek Harness **from a git checkout** (`git clone` + `pnpm dsh web
 
 - **checks quietly in the background** (every 6 h by default) and on demand, from the settings page or the macOS menu bar;
 - shows a **"new version" entry in the sidebar** when there is something to install — clicking it opens an update panel with a version comparison and exactly the three commands about to run;
-- **installs in one click**: `git pull --ff-only` → `pnpm install` → `pnpm build`, with live per-step progress;
+- **installs in one click**: `git pull --ff-only` → `pnpm install` → `pnpm build:official` (official branding build), with live per-step progress;
 - **refuses to touch a dirty or diverged working tree** — it will never discard your local changes;
 - **rolls back in one click** if a step fails (and ships a CLI fallback for when the UI itself is down);
 - **restarts the service** through a simple contract: the process exits with **code 75**, and your supervisor — systemd, PM2, or the bundled macOS shell — brings it back up.

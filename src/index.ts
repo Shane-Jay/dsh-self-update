@@ -1,5 +1,5 @@
 // dsh-self-update：DeepSeek Harness 的应用内自更新插件（git 源码安装版）。
-// 服务端半边：Updater（git fetch/pull → pnpm install → pnpm build）+ 五条 HTTP 路由。
+// 服务端半边：Updater（git fetch/pull → pnpm install → pnpm build:official）+ 五条 HTTP 路由。
 // 浏览器半边经 exports["./client"] 分发（见 src/client/index.tsx）。
 // ⚠️ 只用 named export（loader unwrapExports 陷阱）。
 

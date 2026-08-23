@@ -32,7 +32,7 @@ const ZH = {
   steps: {
     pull: '拉取源码 (git pull --ff-only)',
     install: '安装依赖 (pnpm install)',
-    build: '重建前端 (pnpm build)',
+    build: '重建前端 (pnpm build:official)',
   } as Record<string, string>,
   dontQuit: '更新期间请勿退出 DSH（关窗无妨）。',
   installedRestart: '更新已装好，重启后生效——服务自动拉起，页面随后刷新。',
@@ -78,7 +78,7 @@ const EN: typeof ZH = {
   steps: {
     pull: 'Pull source (git pull --ff-only)',
     install: 'Install deps (pnpm install)',
-    build: 'Rebuild frontend (pnpm build)',
+    build: 'Rebuild frontend (pnpm build:official)',
   } as Record<string, string>,
   dontQuit: "Don't quit DSH while updating (closing the window is fine).",
   installedRestart: 'Update installed. Restart to apply — the service relaunches itself and this page reloads.',

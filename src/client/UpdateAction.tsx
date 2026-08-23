@@ -108,7 +108,7 @@ function StepDot({ state }: { state: string }) {
 const PLAN = [
   { cmd: 'git pull --ff-only', why: 'pull' },
   { cmd: 'pnpm install', why: 'install' },
-  { cmd: 'pnpm build', why: 'build' },
+  { cmd: 'pnpm build:official', why: 'build' },
 ] as const
 
 /** 版本对照块：当前 → 目标 */

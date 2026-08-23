@@ -1,7 +1,7 @@
 // DSH 自更新：检查 harness 仓库落后多少、一键拉取并重建。
 //
 // 更新对象是 deepseek-harness 的 git 工作副本（dsh 从 TS 源直载运行），不是 npm 包。
-// 一次完整安装 = git pull --ff-only → pnpm install → pnpm build。第三步不能省：
+// 一次完整安装 = git pull --ff-only → pnpm install → pnpm build:official。第三步不能省：
 // apps/web/dist 是 gitignore 的产物，拉了新源码不重建，界面还是旧的。
 //
 // 装完必须重启 dsh 进程才生效——这里只负责把"需要重启"这个事实摆出来，
@@ -25,7 +25,7 @@ export interface UpdaterOptions {
   /** 状态落盘文件（跨重启保留"装完待重启"等事实） */
   stateFile?: string
   /**
-   * 安装/回滚要跑的命令。默认 pnpm install --frozen-lockfile + pnpm build；
+   * 安装/回滚要跑的命令。默认 pnpm install --frozen-lockfile + pnpm build:official（官方品牌构建，上游 2026-08 起源码默认构建会显示 "DSH Local Build"）；
    * 换了包管理器或构建脚本时覆盖，测试里也用它把重活换成空跑。
    */
   commands?: { install?: string[]; build?: string[] }
@@ -139,7 +139,7 @@ export class Updater {
     this.branch = opts.branch ?? 'master'
     this.checkIntervalMs = opts.checkIntervalMs ?? 6 * 60 * 60 * 1000
     this.installCmd = opts.commands?.install ?? ['pnpm', 'install', '--frozen-lockfile']
-    this.buildCmd = opts.commands?.build ?? ['pnpm', 'build']
+    this.buildCmd = opts.commands?.build ?? ['pnpm', 'build:official']
     this.stateFile = opts.stateFile
     this.restore()
   }
@@ -304,7 +304,7 @@ export class Updater {
     this.state.steps = [
       { id: 'pull', label: '拉取源码 (git pull --ff-only)', state: 'pending' },
       { id: 'install', label: '安装依赖 (pnpm install)', state: 'pending' },
-      { id: 'build', label: '重建前端 (pnpm build)', state: 'pending' },
+      { id: 'build', label: '重建前端 (pnpm build:official)', state: 'pending' },
     ]
     this.persist()
 
@@ -373,7 +373,7 @@ export class Updater {
     this.state.steps = [
       { id: 'reset', label: `回滚源码 (git reset --hard ${target.slice(0, 9)})`, state: 'pending' },
       { id: 'install', label: '安装依赖 (pnpm install)', state: 'pending' },
-      { id: 'build', label: '重建前端 (pnpm build)', state: 'pending' },
+      { id: 'build', label: '重建前端 (pnpm build:official)', state: 'pending' },
     ]
     this.persist()
     const steps = [
