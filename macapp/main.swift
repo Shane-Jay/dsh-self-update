@@ -1,8 +1,9 @@
 // DSH Lab — a thin native shell around the DSH web UI.
 //
 // It owns the `dsh web` server lifecycle: adopt one that is already listening,
-// otherwise spawn `node --import tsx/esm apps/cli/src/bin.ts web` in the
-// harness repo. Closing the window leaves both the app and the server running;
+// otherwise spawn `node --import tsx/esm apps/cli/src/bin.ts web --no-open` in
+// the harness repo (--no-open: the shell embeds the UI, so the server must not
+// also open the system browser). Closing the window leaves both the app and the server running;
 // quitting stops the server only if this app started it.
 
 import AppKit
@@ -117,7 +118,7 @@ final class ServerController {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: cfg.nodeBin)
-        p.arguments = ["--import", "tsx/esm", "apps/cli/src/bin.ts", "web"]
+        p.arguments = ["--import", "tsx/esm", "apps/cli/src/bin.ts", "web", "--no-open"]
         p.currentDirectoryURL = URL(fileURLWithPath: cfg.harnessRoot)
         p.environment = env
         p.standardOutput = log
