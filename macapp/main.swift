@@ -185,6 +185,23 @@ final class ServerController {
         owned = false
     }
 
+    /// The tokened URL the server printed at startup ("dsh web: http://127.0.0.1:PORT/?token=…").
+    /// Since 0.1.2 the web UI 401s without this token (or the cookie it mints), so the
+    /// shell must load the printed URL instead of the bare origin. Returns the last
+    /// match in the log — the log is truncated on every spawn, so it belongs to the
+    /// current server; an adopted server may leave a stale token here, in which case
+    /// the cookie minted by an earlier visit still signs us in.
+    func authenticatedURL() -> URL? {
+        guard let data = FileManager.default.contents(atPath: cfg.logPath),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let pattern = "http://127\\.0\\.0\\.1:\(cfg.port)/\\?token=[A-Za-z0-9_-]+"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let m = re.matches(in: text, range: range).last,
+              let r = Range(m.range, in: text) else { return nil }
+        return URL(string: String(text[r]))
+    }
+
     func logTail(lines: Int = 40) -> String {
         guard let data = FileManager.default.contents(atPath: cfg.logPath),
               let text = String(data: data, encoding: .utf8) else { return "" }
@@ -369,7 +386,7 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
             overlay.isHidden = true
             if !loadedOnce {
                 loadedOnce = true
-                webView.load(URLRequest(url: cfg.url))
+                loadAuthenticated()
             }
         case .failed(let msg):
             loadedOnce = false
@@ -377,6 +394,21 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
         case .exited:
             loadedOnce = false
             overlay.show(busy: false, text: L("DSH 服务已退出", "DSH service exited"), log: server.logTail())
+        }
+    }
+
+    // The port can be listening a beat before the URL line reaches the log, so
+    // poll for the tokened URL briefly before falling back to the bare origin
+    // (which still works when the WKWebView holds a valid session cookie).
+    private func loadAuthenticated(attempt: Int = 0) {
+        if let url = server.authenticatedURL() {
+            webView.load(URLRequest(url: url))
+        } else if attempt < 10 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.loadAuthenticated(attempt: attempt + 1)
+            }
+        } else {
+            webView.load(URLRequest(url: cfg.url))
         }
     }
 
@@ -392,7 +424,7 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
         )
     }
 
-    @objc func openInBrowser() { NSWorkspace.shared.open(cfg.url) }
+    @objc func openInBrowser() { NSWorkspace.shared.open(server.authenticatedURL() ?? cfg.url) }
     @objc func zoomIn() { webView.pageZoom = min(webView.pageZoom + 0.1, 3.0) }
     @objc func zoomOut() { webView.pageZoom = max(webView.pageZoom - 0.1, 0.5) }
     @objc func zoomReset() { webView.pageZoom = 1.0 }
