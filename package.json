@@ -1,6 +1,6 @@
 {
   "name": "dsh-self-update",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "In-app self-update for DeepSeek Harness git-source installs (check / one-click update / rollback / restart), with an optional native macOS shell.",
   "license": "MIT",
   "type": "module",

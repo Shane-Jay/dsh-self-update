@@ -8,9 +8,9 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-self-update)](https://www.npmjs.com/package/dsh-self-update)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![DSH core](https://img.shields.io/badge/DSH-%3E%3D%200.1.0--rc.5-5B4CF0?style=flat-square)](https://www.npmjs.com/package/@deepseek-ai/dsh)
+[![DSH core](https://img.shields.io/badge/DSH-%3E%3D%200.1.2--alpha.1-5B4CF0?style=flat-square)](https://www.npmjs.com/package/@deepseek-ai/dsh)
 
-<img src="docs/assets/update-panel.png" alt="更新页：当前/新版本对照、将执行的三步、一键开始更新" width="760">
+<img src="docs/assets/update-panel.png" alt="更新页：当前/新版本对照、将执行的步骤、一键开始更新" width="760">
 
 </div>
 
@@ -21,9 +21,10 @@
 **dsh-self-update 把这整个循环变成一个按钮。** 它是一个 harness 插件：
 
 - **后台静默检查**（默认 6 小时一轮），也可随时手动检查——设置页或 macOS 菜单栏都行；
-- 有新版本时**侧栏浮出一行「新版本 x.y.z ›」**，点开是更新页：版本对照 + 将要执行的三条命令，明明白白；
-- **一键安装**：`git pull --ff-only` → `pnpm install` → `pnpm build:official`（官方品牌构建），逐步实时进度；
-- **工作区有未提交改动或本地分叉时拒绝更新**——绝不替你丢改动；
+- 有新版本时**侧栏浮出一行「新版本 x.y.z ›」**，点开是更新页：版本对照 + 将要执行的命令，明明白白；
+- **一键安装**：`git pull --ff-only` → `pnpm install` → `pnpm clean` → `pnpm build:official`（官方品牌构建），逐步实时进度——clean 一步清掉 gitignore 的旧构建产物，跨大版本升级不再被残留毒化（旧版 harness 没有 clean script 时自动跳过）；
+- **工作区有未提交改动时拒绝更新**——绝不替你丢改动；
+- **本地分叉不再是死路**：更新页列出本地独有的提交，一键「备份并对齐远端」——先把你的提交存成 `local-backup-<时间戳>` 分支，再硬对齐远端继续更新（工作区脏时拒绝执行）；
 - 失败时**一键回滚**（UI 挂掉时还有命令行兜底）；
 - **重启闭环**：进程以**退出码 75** 退出（"请重启我"），由 systemd / PM2 / 自带 macOS 外壳自动拉起。
 
@@ -51,7 +52,7 @@ pnpm dsh plugin --profile web add dsh-self-update
 
 ## macOS 外壳（可选）
 
-原生 Swift + WKWebView（非 Electron）的 DSH.app，托管 dsh 服务：点图标即界面，关窗不停服务，⌘Q 才停。菜单栏有 **「检查更新…」**，直接弹出应用内更新页；服务以 75 退出时自动拉起并重载页面。
+原生 Swift + WKWebView（非 Electron）的 DSH.app，托管 dsh 服务：点图标即界面，关窗不停服务，⌘Q 才停。菜单栏有 **「检查更新…」**，直接弹出应用内更新页；服务以 75 退出时自动拉起并重载页面。已适配 harness 0.1.2 引入的 web 鉴权：外壳自动抓取服务启动时打印的带 token URL，内嵌页面无需手动登录。
 
 ```bash
 node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具
@@ -72,7 +73,7 @@ node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具
 
 ## 接口契约
 
-- **HTTP** — `/self-update/api/update/{status,check,install,rollback,restart}`；写路由要求 `Content-Type: application/json` + 本机 `Origin`（CSRF 防线）。
+- **HTTP** — `/self-update/api/update/{status,check,install,realign,rollback,restart}`；写路由要求 `Content-Type: application/json` + 本机 `Origin`（CSRF 防线）。
 - **弹层事件** — 在 `window` 上派发 `dsh-self-update:open`（`detail: { check: true }` = 打开即检查）。macOS 菜单项就是通过 `evaluateJavaScript` 派发它。
 - **重启** — 进程退出码 **75** = 请求重启；其他退出码一律按崩溃处理。
 - **状态** — 落盘 `~/.dsh-self-update/update-state.json`。

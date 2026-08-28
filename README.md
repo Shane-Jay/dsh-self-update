@@ -8,9 +8,9 @@ In-app self-update for [DeepSeek Harness](https://github.com/deepseek-ai/deepsee
 
 [![npm version](https://img.shields.io/npm/v/dsh-self-update)](https://www.npmjs.com/package/dsh-self-update)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![DSH core](https://img.shields.io/badge/DSH-%3E%3D%200.1.0--rc.5-5B4CF0?style=flat-square)](https://www.npmjs.com/package/@deepseek-ai/dsh)
+[![DSH core](https://img.shields.io/badge/DSH-%3E%3D%200.1.2--alpha.1-5B4CF0?style=flat-square)](https://www.npmjs.com/package/@deepseek-ai/dsh)
 
-<img src="docs/assets/update-panel.png" alt="Update panel: current vs. new version, the three steps about to run, and a one-click Update button" width="760">
+<img src="docs/assets/update-panel.png" alt="Update panel: current vs. new version, the steps about to run, and a one-click Update button" width="760">
 
 </div>
 
@@ -21,9 +21,10 @@ If you run DeepSeek Harness **from a git checkout** (`git clone` + `pnpm dsh web
 **dsh-self-update turns that whole cycle into a button.** It is a harness plugin that:
 
 - **checks quietly in the background** (every 6 h by default) and on demand, from the settings page or the macOS menu bar;
-- shows a **"new version" entry in the sidebar** when there is something to install — clicking it opens an update panel with a version comparison and exactly the three commands about to run;
-- **installs in one click**: `git pull --ff-only` → `pnpm install` → `pnpm build:official` (official branding build), with live per-step progress;
-- **refuses to touch a dirty or diverged working tree** — it will never discard your local changes;
+- shows a **"new version" entry in the sidebar** when there is something to install — clicking it opens an update panel with a version comparison and exactly the commands about to run;
+- **installs in one click**: `git pull --ff-only` → `pnpm install` → `pnpm clean` → `pnpm build:official` (official branding build), with live per-step progress — the clean step drops stale gitignored build output that would otherwise poison a large version jump (skipped gracefully on harness versions without a `clean` script);
+- **refuses to touch a dirty working tree** — it will never discard your local changes;
+- **turns a diverged checkout into a guided exit** instead of a dead end: the panel lists your local-only commits and offers one-click **"back up & realign"** — your commits are saved to a `local-backup-<timestamp>` branch, the tree is hard-reset to the remote, and the update continues (refused while the tree is dirty);
 - **rolls back in one click** if a step fails (and ships a CLI fallback for when the UI itself is down);
 - **restarts the service** through a simple contract: the process exits with **code 75**, and your supervisor — systemd, PM2, or the bundled macOS shell — brings it back up.
 
@@ -51,7 +52,7 @@ The **Restart now** button makes the process exit with **code 75** ("please rest
 
 ## macOS shell (optional)
 
-A native Swift + WKWebView app (no Electron) that owns the dsh service: click the icon to open the UI, closing the window keeps the service running, ⌘Q stops it. It adds a **"Check for Updates…"** menu item that opens the in-app update panel, and it automatically relaunches the service when it exits with code 75.
+A native Swift + WKWebView app (no Electron) that owns the dsh service: click the icon to open the UI, closing the window keeps the service running, ⌘Q stops it. It adds a **"Check for Updates…"** menu item that opens the in-app update panel, and it automatically relaunches the service when it exits with code 75. Works with the browser-auth introduced in harness 0.1.2: the shell picks up the tokened URL the server prints at startup, so the embedded page signs in by itself.
 
 ```bash
 node macapp/build-mac-app.mjs        # requires Xcode command line tools
@@ -72,7 +73,7 @@ The exit-code-75 restart contract is the piece the community has been asking the
 
 ## Interface contract
 
-- **HTTP** — `/self-update/api/update/{status,check,install,rollback,restart}`. Write routes require `Content-Type: application/json` and a local `Origin` (CSRF line of defense).
+- **HTTP** — `/self-update/api/update/{status,check,install,realign,rollback,restart}`. Write routes require `Content-Type: application/json` and a local `Origin` (CSRF line of defense).
 - **Panel event** — dispatch `dsh-self-update:open` on `window` (`detail: { check: true }` to check immediately). This is exactly what the macOS menu item does via `evaluateJavaScript`.
 - **Restart** — process exit code **75** means "restart requested". Anything else is a crash.
 - **State** — persisted at `~/.dsh-self-update/update-state.json`.
