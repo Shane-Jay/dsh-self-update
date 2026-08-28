@@ -19,8 +19,11 @@ const git = (cwd: string, ...args: string[]): string =>
     },
   }).trim()
 
-/** origin（裸库） + 一份工作副本 + 一份用于制造上游提交的副本 */
-function makeRepos(version: string): { origin: string; work: string; upstream: string } {
+/**
+ * origin（裸库） + 一份工作副本 + 一份用于制造上游提交的副本。
+ * 默认 package.json 带 "clean" script（对齐真实 harness）；scripts:false 造旧版本仓库。
+ */
+function makeRepos(version: string, opts: { scripts?: boolean } = {}): { origin: string; work: string; upstream: string } {
   const base = tmpDirTracked('dcl-updater-')
   const origin = join(base, 'origin.git')
   const seed = join(base, 'seed')
@@ -29,7 +32,7 @@ function makeRepos(version: string): { origin: string; work: string; upstream: s
 
   execFileSync('git', ['init', '--bare', '-b', 'master', origin])
   execFileSync('git', ['init', '-b', 'master', seed])
-  writeFileSync(join(seed, 'package.json'), JSON.stringify({ name: 'h', version }))
+  writeFileSync(join(seed, 'package.json'), JSON.stringify(pkgJson(version, opts.scripts !== false)))
   git(seed, 'add', '.')
   git(seed, 'commit', '-m', 'seed')
   git(seed, 'remote', 'add', 'origin', origin)
@@ -40,15 +43,19 @@ function makeRepos(version: string): { origin: string; work: string; upstream: s
   return { origin, work, upstream }
 }
 
+function pkgJson(version: string, withScripts: boolean): Record<string, unknown> {
+  return { name: 'h', version, ...(withScripts ? { scripts: { clean: 'true' } } : {}) }
+}
+
 /** 在上游造一个新提交并推上去 */
-function pushUpstream(upstream: string, version: string, subject: string): void {
-  writeFileSync(join(upstream, 'package.json'), JSON.stringify({ name: 'h', version }))
+function pushUpstream(upstream: string, version: string, subject: string, opts: { scripts?: boolean } = {}): void {
+  writeFileSync(join(upstream, 'package.json'), JSON.stringify(pkgJson(version, opts.scripts !== false)))
   git(upstream, 'add', '.')
   git(upstream, 'commit', '-m', subject)
   git(upstream, 'push', 'origin', 'master')
 }
 
-const stub = { install: ['git', '--version'], build: ['git', '--version'] }
+const stub = { install: ['git', '--version'], clean: ['git', '--version'], build: ['git', '--version'] }
 
 describe('Updater', () => {
   it('check() 报出落后的提交数与目标版本；无更新时 available 为空', async () => {
@@ -73,7 +80,7 @@ describe('Updater', () => {
     await u.check()
 
     const st = await u.install()
-    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok'])
+    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok', 'ok'])
     expect(st.phase).toBe('ready-to-restart')
     expect(st.restartRequired).toBe(true)
     expect(st.previousSha).toBeTruthy()
@@ -122,7 +129,7 @@ describe('Updater', () => {
     expect(git(work, 'rev-parse', 'HEAD')).not.toBe(before)
 
     const st = await u.rollback()
-    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok'])
+    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok', 'ok'])
     expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
     expect(JSON.parse(readFileSync(join(work, 'package.json'), 'utf8')).version).toBe('1.0.0')
   })
@@ -143,6 +150,64 @@ describe('Updater', () => {
   })
 })
 
+describe('Updater：清理旧产物这一步', () => {
+  it('目标仓库有 clean script 时，在 install 之后、build 之前真的执行', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({
+      repoRoot: work,
+      checkIntervalMs: 0,
+      // clean 步留下可验证的痕迹：git tag 只有真跑了才会存在
+      commands: { ...stub, clean: ['git', 'tag', 'clean-ran'] },
+    })
+    await u.check()
+
+    const st = await u.install()
+    expect(st.phase).toBe('ready-to-restart')
+    expect(st.steps.map((s) => s.id)).toEqual(['pull', 'install', 'clean', 'build'])
+    expect(st.steps.find((s) => s.id === 'clean')?.state).toBe('ok')
+    expect(git(work, 'tag', '--list')).toBe('clean-ran')
+  })
+
+  it('旧版本 harness 没有 clean script：跳过并留说明，更新照样成功', async () => {
+    const { work, upstream } = makeRepos('1.0.0', { scripts: false })
+    pushUpstream(upstream, '1.1.0', 'x', { scripts: false })
+    // 真跑这条命令必然失败——用它证明"跳过"是真跳过，不是跑了个空
+    const u = new Updater({
+      repoRoot: work,
+      checkIntervalMs: 0,
+      commands: { ...stub, clean: ['git', 'no-such-subcommand'] },
+    })
+    await u.check()
+
+    const st = await u.install()
+    expect(st.phase).toBe('ready-to-restart')
+    expect(st.restartRequired).toBe(true)
+    const clean = st.steps.find((s) => s.id === 'clean')
+    expect(clean?.state).toBe('skipped')
+    expect(clean?.tail).toContain('clean')
+    expect(st.steps.find((s) => s.id === 'build')?.state).toBe('ok')
+  })
+
+  it('clean 失败 = 整次更新失败：不能带着旧产物往下构建', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({
+      repoRoot: work,
+      checkIntervalMs: 0,
+      commands: { ...stub, clean: ['git', 'no-such-subcommand'] },
+    })
+    await u.check()
+
+    const st = await u.install()
+    expect(st.phase).toBe('failed')
+    expect(st.restartRequired).toBe(false)
+    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'failed', 'skipped'])
+    expect(st.lastError).toContain('清理旧产物')
+    expect(st.available).toBeUndefined() // HEAD 已快进，别再说"有更新"
+  })
+})
+
 describe('Updater：安装失败后的状态自洽', () => {
   it('build 步失败时 HEAD 已经快进——available 必须重算，不能还写着落后 N 个提交', async () => {
     const { work, upstream } = makeRepos('1.0.0')
@@ -151,14 +216,14 @@ describe('Updater：安装失败后的状态自洽', () => {
     const u = new Updater({
       repoRoot: work,
       checkIntervalMs: 0,
-      commands: { install: ['git', '--version'], build: ['git', 'no-such-subcommand'] },
+      commands: { ...stub, build: ['git', 'no-such-subcommand'] },
     })
     await u.check()
     expect((await u.status()).available?.behind).toBe(1)
 
     const st = await u.install()
     expect(st.phase).toBe('failed')
-    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'failed'])
+    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok', 'failed'])
     expect(st.current.version).toBe('1.1.0') // 源码已经是新的了
     expect(st.available).toBeUndefined()     // 所以不该再说"有更新"
   })

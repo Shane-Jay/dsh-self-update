@@ -2,7 +2,7 @@
 //
 // 平时完全不渲染——后台静默检查（默认 6 小时一轮，见 updater.ts），只有真有新版本
 // 才在侧栏浮出一行「新版本 x.y.z ›」。侧栏那行不做任何有后果的事，点开才是更新页：
-// 版本对照、要执行的三步、开始/忽略都在那里，按错的风险由结构消除。
+// 版本对照、要执行的几步、开始/忽略都在那里，按错的风险由结构消除。
 // 忽略按目标提交记（localStorage），下一个新版本会再提醒。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -108,6 +108,7 @@ function StepDot({ state }: { state: string }) {
 const PLAN = [
   { cmd: 'git pull --ff-only', why: 'pull' },
   { cmd: 'pnpm install', why: 'install' },
+  { cmd: 'pnpm clean', why: 'clean' },
   { cmd: 'pnpm build:official', why: 'build' },
 ] as const
 

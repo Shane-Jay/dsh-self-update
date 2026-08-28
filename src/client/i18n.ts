@@ -27,11 +27,13 @@ const ZH = {
   planWhy: {
     pull: '拉取新版本源码',
     install: '同步依赖',
+    clean: '清掉旧版构建产物',
     build: '重建前端（dist 不入库）',
   },
   steps: {
     pull: '拉取源码 (git pull --ff-only)',
     install: '安装依赖 (pnpm install)',
+    clean: '清理旧产物 (pnpm clean)',
     build: '重建前端 (pnpm build:official)',
   } as Record<string, string>,
   dontQuit: '更新期间请勿退出 DSH（关窗无妨）。',
@@ -73,11 +75,13 @@ const EN: typeof ZH = {
   planWhy: {
     pull: 'Fetch the new source',
     install: 'Sync dependencies',
+    clean: 'Drop stale build output',
     build: 'Rebuild the frontend (dist is not committed)',
   },
   steps: {
     pull: 'Pull source (git pull --ff-only)',
     install: 'Install deps (pnpm install)',
+    clean: 'Clean stale output (pnpm clean)',
     build: 'Rebuild frontend (pnpm build:official)',
   } as Record<string, string>,
   dontQuit: "Don't quit DSH while updating (closing the window is fine).",

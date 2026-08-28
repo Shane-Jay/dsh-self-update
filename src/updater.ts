@@ -1,8 +1,11 @@
 // DSH 自更新：检查 harness 仓库落后多少、一键拉取并重建。
 //
 // 更新对象是 deepseek-harness 的 git 工作副本（dsh 从 TS 源直载运行），不是 npm 包。
-// 一次完整安装 = git pull --ff-only → pnpm install → pnpm build:official。第三步不能省：
-// apps/web/dist 是 gitignore 的产物，拉了新源码不重建，界面还是旧的。
+// 一次完整安装 = git pull --ff-only → pnpm install → pnpm clean → pnpm build:official。
+// 后两步都不能省：apps/web/dist 是 gitignore 的产物，拉了新源码不重建，界面还是旧的；
+// 而旧产物不清掉，跨版本升级会翻车——2026-08-28 跨 1079 个提交那次，残留的
+// packages/host/apiproxy/lib/types/api-proxy.js 还在引用已删除的 API、根目录 *.tsbuildinfo
+// 又让 tsc -b 误判"无需重发射"，连环导致构建失败、client bundle 缺失、启动崩溃。
 //
 // 装完必须重启 dsh 进程才生效——这里只负责把"需要重启"这个事实摆出来，
 // 重启动作由 /self-update/api/update/restart 触发（进程以 75 退出，桌面壳据此自动拉起）。
@@ -25,10 +28,11 @@ export interface UpdaterOptions {
   /** 状态落盘文件（跨重启保留"装完待重启"等事实） */
   stateFile?: string
   /**
-   * 安装/回滚要跑的命令。默认 pnpm install --frozen-lockfile + pnpm build:official（官方品牌构建，上游 2026-08 起源码默认构建会显示 "DSH Local Build"）；
+   * 安装/回滚要跑的命令。默认 pnpm install --frozen-lockfile + pnpm clean + pnpm build:official（官方品牌构建，上游 2026-08 起源码默认构建会显示 "DSH Local Build"）；
    * 换了包管理器或构建脚本时覆盖，测试里也用它把重活换成空跑。
+   * clean 只在目标仓库 package.json 里确实有 "clean" script 时才执行（旧版本 harness 没有）。
    */
-  commands?: { install?: string[]; build?: string[] }
+  commands?: { install?: string[]; clean?: string[]; build?: string[] }
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'installing' | 'ready-to-restart' | 'failed'
@@ -38,7 +42,7 @@ export interface UpdateStep {
   id: string
   label: string
   state: StepState
-  /** 该步的输出尾巴（失败时给人看的证据） */
+  /** 该步的输出尾巴（失败时给人看的证据；跳过时写一句为什么跳过） */
   tail?: string
   startedAt?: string
   endedAt?: string
@@ -70,6 +74,15 @@ export interface UpdateStatus {
   restartRequired: boolean
   /** 安装前的 HEAD，供回滚 */
   previousSha?: string
+}
+
+/** install/rollback 里一条待执行的命令。needsScript：目标仓库缺这个 script 就跳过该步。 */
+interface RunnableStep {
+  id: string
+  cmd: string
+  args: string[]
+  timeoutMs: number
+  needsScript?: string
 }
 
 const TAIL_LIMIT = 4000
@@ -118,6 +131,7 @@ export class Updater {
   private readonly stateFile: string | undefined
   private readonly checkIntervalMs: number
   private readonly installCmd: string[]
+  private readonly cleanCmd: string[]
   private readonly buildCmd: string[]
   private branch: string
   private timer: NodeJS.Timeout | undefined
@@ -139,6 +153,7 @@ export class Updater {
     this.branch = opts.branch ?? 'master'
     this.checkIntervalMs = opts.checkIntervalMs ?? 6 * 60 * 60 * 1000
     this.installCmd = opts.commands?.install ?? ['pnpm', 'install', '--frozen-lockfile']
+    this.cleanCmd = opts.commands?.clean ?? ['pnpm', 'clean']
     this.buildCmd = opts.commands?.build ?? ['pnpm', 'build:official']
     this.stateFile = opts.stateFile
     this.restore()
@@ -281,6 +296,22 @@ export class Updater {
     if (this.state.available !== undefined) this.state.available.behind = behind
   }
 
+  /**
+   * 目标仓库的 package.json 里有没有这个 script。
+   * 必须在该步真要跑的那一刻现读：pull 之后 package.json 已经换成新版本的了，
+   * 旧版本没有 clean、新版本有——按拉取后的事实决定跑不跑。
+   */
+  private hasScript(name: string): boolean {
+    try {
+      const pkg = JSON.parse(readFileSync(join(this.repoRoot, 'package.json'), 'utf8')) as {
+        scripts?: Record<string, unknown>
+      }
+      return typeof pkg.scripts?.[name] === 'string'
+    } catch {
+      return false // 读不到就当没有：跳过好过瞎跑
+    }
+  }
+
   private setStep(id: string, patch: Partial<UpdateStep>): void {
     const step = this.state.steps.find((s) => s.id === id)
     if (step !== undefined) Object.assign(step, patch)
@@ -304,6 +335,7 @@ export class Updater {
     this.state.steps = [
       { id: 'pull', label: '拉取源码 (git pull --ff-only)', state: 'pending' },
       { id: 'install', label: '安装依赖 (pnpm install)', state: 'pending' },
+      { id: 'clean', label: '清理旧产物 (pnpm clean)', state: 'pending' },
       { id: 'build', label: '重建前端 (pnpm build:official)', state: 'pending' },
     ]
     this.persist()
@@ -325,14 +357,24 @@ export class Updater {
     this.state.previousSha = pre.current.sha
     this.persist()
 
-    const steps = [
+    const steps: RunnableStep[] = [
       { id: 'pull', cmd: 'git', args: ['pull', '--ff-only', this.remote, this.branch], timeoutMs: 300_000 },
       { id: 'install', cmd: this.installCmd[0]!, args: this.installCmd.slice(1), timeoutMs: 900_000 },
+      { id: 'clean', cmd: this.cleanCmd[0]!, args: this.cleanCmd.slice(1), timeoutMs: 300_000, needsScript: 'clean' },
       { id: 'build', cmd: this.buildCmd[0]!, args: this.buildCmd.slice(1), timeoutMs: 1_800_000 },
     ]
 
     try {
       for (const step of steps) {
+        if (step.needsScript !== undefined && !this.hasScript(step.needsScript)) {
+          // 旧版本 harness 没有这个 script——跳过并留一句说明，不能让整次更新失败
+          this.setStep(step.id, {
+            state: 'skipped',
+            tail: `目标仓库 package.json 没有 "${step.needsScript}" script，已跳过`,
+            endedAt: new Date().toISOString(),
+          })
+          continue
+        }
         this.setStep(step.id, { state: 'running', startedAt: new Date().toISOString() })
         const r = await run(step.cmd, step.args, {
           cwd: this.repoRoot,
@@ -373,16 +415,28 @@ export class Updater {
     this.state.steps = [
       { id: 'reset', label: `回滚源码 (git reset --hard ${target.slice(0, 9)})`, state: 'pending' },
       { id: 'install', label: '安装依赖 (pnpm install)', state: 'pending' },
+      { id: 'clean', label: '清理旧产物 (pnpm clean)', state: 'pending' },
       { id: 'build', label: '重建前端 (pnpm build:official)', state: 'pending' },
     ]
     this.persist()
-    const steps = [
+    // 回滚同样要清产物：刚失败的那次更新可能已经写出了新版本的 lib/ 与 tsbuildinfo，
+    // 留着它们回滚重建出来的照样是坏的。
+    const steps: RunnableStep[] = [
       { id: 'reset', cmd: 'git', args: ['reset', '--hard', target], timeoutMs: 120_000 },
       { id: 'install', cmd: this.installCmd[0]!, args: this.installCmd.slice(1), timeoutMs: 900_000 },
+      { id: 'clean', cmd: this.cleanCmd[0]!, args: this.cleanCmd.slice(1), timeoutMs: 300_000, needsScript: 'clean' },
       { id: 'build', cmd: this.buildCmd[0]!, args: this.buildCmd.slice(1), timeoutMs: 1_800_000 },
     ]
     try {
       for (const step of steps) {
+        if (step.needsScript !== undefined && !this.hasScript(step.needsScript)) {
+          this.setStep(step.id, {
+            state: 'skipped',
+            tail: `目标仓库 package.json 没有 "${step.needsScript}" script，已跳过`,
+            endedAt: new Date().toISOString(),
+          })
+          continue
+        }
         this.setStep(step.id, { state: 'running', startedAt: new Date().toISOString() })
         const r = await run(step.cmd, step.args, { cwd: this.repoRoot, timeoutMs: step.timeoutMs })
         this.setStep(step.id, {
