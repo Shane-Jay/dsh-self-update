@@ -17,6 +17,18 @@ export interface UpdateRev {
   committedAt?: string
 }
 
+export interface DivergedCommit {
+  shortSha: string
+  subject: string
+}
+
+export interface DivergenceInfo {
+  upstreamRef: string
+  ahead: number
+  commits: DivergedCommit[]
+  truncated: boolean
+}
+
 export interface UpdateStatus {
   phase: 'idle' | 'checking' | 'installing' | 'ready-to-restart' | 'failed'
   repoRoot: string
@@ -27,9 +39,11 @@ export interface UpdateStatus {
   lastError?: string
   dirty: boolean
   diverged: boolean
+  divergence?: DivergenceInfo
   steps: UpdateStep[]
   restartRequired: boolean
   previousSha?: string
+  backupBranch?: string
 }
 
 /** 自更新不可用（非 git 工作副本）时返回 undefined —— 席位据此整个不渲染。 */
@@ -44,7 +58,7 @@ export async function fetchUpdateStatus(): Promise<UpdateStatus | undefined> {
 }
 
 export async function postUpdate(
-  action: 'check' | 'install' | 'rollback' | 'restart',
+  action: 'check' | 'install' | 'realign' | 'rollback' | 'restart',
 ): Promise<UpdateStatus | undefined> {
   try {
     const res = await fetch(`/self-update/api/update/${action}`, {

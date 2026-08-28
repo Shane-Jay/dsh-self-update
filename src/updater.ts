@@ -56,6 +56,24 @@ export interface RevInfo {
   committedAt?: string
 }
 
+/** 本地独有（远端没有）的一个提交 */
+export interface DivergedCommit {
+  shortSha: string
+  subject: string
+}
+
+/** 非快进时的分叉详情：本地领先远端几个提交、都是哪些 */
+export interface DivergenceInfo {
+  /** 比对用的远端引用，如 origin/master */
+  upstreamRef: string
+  /** 本地领先远端的提交数 */
+  ahead: number
+  /** 本地独有提交（新→旧），最多 DIVERGED_LOG_LIMIT 条 */
+  commits: DivergedCommit[]
+  /** commits 被截断时为 true（ahead > commits.length） */
+  truncated: boolean
+}
+
 export interface UpdateStatus {
   phase: UpdatePhase
   repoRoot: string
@@ -69,11 +87,15 @@ export interface UpdateStatus {
   dirty: boolean
   /** 非快进（本地有远端没有的提交）→ 拒绝安装 */
   diverged: boolean
+  /** diverged 为 true 时给出具体分叉信息，供界面摊开讲清楚 */
+  divergence?: DivergenceInfo
   steps: UpdateStep[]
   /** 安装成功后为 true，重启即生效 */
   restartRequired: boolean
   /** 安装前的 HEAD，供回滚 */
   previousSha?: string
+  /** 最近一次「备份并对齐远端」创建的备份分支名 */
+  backupBranch?: string
 }
 
 /** install/rollback 里一条待执行的命令。needsScript：目标仓库缺这个 script 就跳过该步。 */
@@ -86,6 +108,14 @@ interface RunnableStep {
 }
 
 const TAIL_LIMIT = 4000
+/** 分叉提交最多列这么多条，再多界面也读不动（超出部分用 truncated 标出来） */
+const DIVERGED_LOG_LIMIT = 20
+
+/** 备份分支名的时间戳：本地时区的 yyyyMMdd-HHmmss */
+export function backupStamp(d: Date = new Date()): string {
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
 
 function tailOf(text: string): string {
   const trimmed = text.trimEnd()
@@ -145,6 +175,7 @@ export class Updater {
     steps: UpdateStep[]
     restartRequired: boolean
     previousSha?: string
+    backupBranch?: string
   } = { phase: 'idle', steps: [], restartRequired: false }
 
   constructor(private readonly opts: UpdaterOptions) {
@@ -171,6 +202,7 @@ export class Updater {
         ...(saved.lastCheckedAt !== undefined ? { lastCheckedAt: saved.lastCheckedAt } : {}),
         ...(saved.available !== undefined ? { available: saved.available } : {}),
         ...(saved.previousSha !== undefined ? { previousSha: saved.previousSha } : {}),
+        ...(saved.backupBranch !== undefined ? { backupBranch: saved.backupBranch } : {}),
       }
     } catch { /* 状态文件坏了就当没有 */ }
   }
@@ -219,10 +251,42 @@ export class Updater {
     if (m?.[2] !== undefined) this.branch = m[2]
   }
 
+  /** 与 diverged 判断共用的远端引用——备份对齐也 reset 到它，两处不能各写各的。 */
+  private get upstreamRef(): string {
+    return `${this.remote}/${this.branch}`
+  }
+
+  /**
+   * 本地领先远端的提交清单。只读本地 ref（不联网），拿不到就返回 undefined
+   * ——上游引用不存在时 rev-list 会失败，这时不该假装"没分叉"，交给调用方按 ahead 判断。
+   */
+  private async divergence(ahead: number): Promise<DivergenceInfo> {
+    // %h 短 hash、%s 标题，中间用 \x1f 隔开：标题里可能有任何可打印字符，别用它们当分隔符
+    const raw = await this.gitOut([
+      'log', `--max-count=${DIVERGED_LOG_LIMIT}`, '--format=%h%x1f%s', `${this.upstreamRef}..HEAD`,
+    ])
+    const commits = raw === ''
+      ? []
+      : raw.split('\n').map((line) => {
+          const i = line.indexOf('\x1f')
+          return i < 0
+            ? { shortSha: line.trim(), subject: '' }
+            : { shortSha: line.slice(0, i), subject: line.slice(i + 1) }
+        })
+    return {
+      upstreamRef: this.upstreamRef,
+      ahead,
+      commits,
+      truncated: ahead > commits.length,
+    }
+  }
+
   async status(): Promise<UpdateStatus> {
     const current = await this.currentRev()
     const dirty = (await this.gitOut(['status', '--porcelain'])) !== ''
-    const ahead = await this.gitOut(['rev-list', '--count', `${this.remote}/${this.branch}..HEAD`])
+    const aheadRaw = await this.gitOut(['rev-list', '--count', `${this.upstreamRef}..HEAD`])
+    const ahead = Number(aheadRaw || '0')
+    const diverged = Number.isFinite(ahead) && ahead > 0
     return {
       phase: this.state.phase,
       repoRoot: this.repoRoot,
@@ -232,10 +296,12 @@ export class Updater {
       ...(this.state.lastCheckedAt !== undefined ? { lastCheckedAt: this.state.lastCheckedAt } : {}),
       ...(this.state.lastError !== undefined ? { lastError: this.state.lastError } : {}),
       dirty,
-      diverged: ahead !== '' && ahead !== '0',
+      diverged,
+      ...(diverged ? { divergence: await this.divergence(ahead) } : {}),
       steps: this.state.steps,
       restartRequired: this.state.restartRequired,
       ...(this.state.previousSha !== undefined ? { previousSha: this.state.previousSha } : {}),
+      ...(this.state.backupBranch !== undefined ? { backupBranch: this.state.backupBranch } : {}),
     }
   }
 
@@ -399,6 +465,99 @@ export class Updater {
       this.state.phase = 'ready-to-restart'
       this.state.restartRequired = true
       delete this.state.available
+      this.persist()
+      return this.status()
+    } finally {
+      this.busy = false
+    }
+  }
+
+  /**
+   * 非快进的出路：把本地独有提交存成一条备份分支，再硬对齐远端，然后照常 install + build。
+   *
+   * 顺序不能反——先 `git branch` 再 `git reset --hard`，备份分支建成之前 HEAD 不动，
+   * 中途失败（分支重名等）最坏就是多一条分支，本地提交一个都不会丢。
+   * 对齐后 HEAD 就等于远端，没有可 pull 的东西了，所以这里不复用 install()，
+   * 而是自带 install/build 两步把产物重建成一致状态。
+   */
+  async realign(): Promise<UpdateStatus> {
+    if (this.busy) return this.status()
+    this.busy = true
+    this.state.phase = 'installing'
+    delete this.state.lastError
+    this.state.restartRequired = false
+    const backupBranch = `local-backup-${backupStamp()}`
+    const target = this.upstreamRef
+    this.state.steps = [
+      { id: 'backup', label: `备份本地提交 (git branch ${backupBranch})`, state: 'pending' },
+      { id: 'realign', label: `对齐远端 (git reset --hard ${target})`, state: 'pending' },
+      { id: 'install', label: '安装依赖 (pnpm install)', state: 'pending' },
+      { id: 'clean', label: '清理旧产物 (pnpm clean)', state: 'pending' },
+      { id: 'build', label: '重建前端 (pnpm build:official)', state: 'pending' },
+    ]
+    this.persist()
+
+    const fail = async (msg: string): Promise<UpdateStatus> => {
+      this.busy = false
+      this.state.lastError = msg
+      this.state.phase = 'failed'
+      this.state.steps = []
+      this.persist()
+      return this.status()
+    }
+
+    const pre = await this.status()
+    // 脏工作区上 reset --hard 会直接抹掉未提交改动，备份分支救不回来——这里必须挡死
+    if (pre.dirty) return await fail('工作区有未提交改动，拒绝对齐远端（先自行处理 git status）')
+    if (!pre.diverged) return await fail('本地没有领先远端的提交，无需对齐')
+
+    this.state.previousSha = pre.current.sha
+    this.state.backupBranch = backupBranch
+    this.persist()
+
+    // 对齐同样要清产物：reset --hard 不清 gitignore 的旧构建产物，跨版本跳跃时
+    // 残留会毒化重建（正是 2026-08-28 那次事故的形态）。
+    const steps: RunnableStep[] = [
+      { id: 'backup', cmd: 'git', args: ['branch', backupBranch, 'HEAD'], timeoutMs: 120_000 },
+      { id: 'realign', cmd: 'git', args: ['reset', '--hard', target], timeoutMs: 120_000 },
+      { id: 'install', cmd: this.installCmd[0]!, args: this.installCmd.slice(1), timeoutMs: 900_000 },
+      { id: 'clean', cmd: this.cleanCmd[0]!, args: this.cleanCmd.slice(1), timeoutMs: 300_000, needsScript: 'clean' },
+      { id: 'build', cmd: this.buildCmd[0]!, args: this.buildCmd.slice(1), timeoutMs: 1_800_000 },
+    ]
+
+    try {
+      for (const step of steps) {
+        if (step.needsScript !== undefined && !this.hasScript(step.needsScript)) {
+          this.setStep(step.id, {
+            state: 'skipped',
+            tail: `目标仓库 package.json 没有 "${step.needsScript}" script，已跳过`,
+            endedAt: new Date().toISOString(),
+          })
+          continue
+        }
+        this.setStep(step.id, { state: 'running', startedAt: new Date().toISOString() })
+        const r = await run(step.cmd, step.args, {
+          cwd: this.repoRoot,
+          timeoutMs: step.timeoutMs,
+          env: { ...process.env, CI: '1' },
+        })
+        this.setStep(step.id, {
+          state: r.ok ? 'ok' : 'failed',
+          tail: tailOf(r.out),
+          endedAt: new Date().toISOString(),
+        })
+        if (!r.ok) {
+          for (const rest of this.state.steps) if (rest.state === 'pending') rest.state = 'skipped'
+          this.state.phase = 'failed'
+          this.state.lastError = `${this.state.steps.find((x) => x.id === step.id)?.label ?? step.id} 失败`
+          await this.recount()
+          this.persist()
+          return this.status()
+        }
+      }
+      this.state.phase = 'ready-to-restart'
+      this.state.restartRequired = true
+      await this.recount() // HEAD 已等于远端，"落后 N 个提交"必须清掉
       this.persist()
       return this.status()
     } finally {

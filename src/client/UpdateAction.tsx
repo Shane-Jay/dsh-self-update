@@ -142,6 +142,61 @@ function VersionCompare({ status }: { status: UpdateStatus }) {
   )
 }
 
+/** 备份分支名里的时间戳由后端在执行那一刻生成——界面只能给出形状，不能假装知道具体值。 */
+const BACKUP_BRANCH_SHAPE = 'local-backup-<yyyyMMdd-HHmmss>'
+
+/**
+ * 非快进（本地有远端没有的提交）时的出路面板：先把分叉摊开——领先几个提交、都是哪些，
+ * 再把「备份并对齐远端」会做什么写全，按钮点了就跑（说明已经够，不再叠一层确认弹窗）。
+ * 工作区脏时按钮禁用：reset --hard 会抹掉未提交改动，备份分支救不回来。
+ */
+function DivergedPanel({
+  status, busy, onRealign,
+}: { status: UpdateStatus; busy: boolean; onRealign: () => void }) {
+  const t = tr()
+  const d = status.divergence
+  if (d === undefined) return null
+  const disabled = busy || status.dirty
+  return (
+    <div style={{
+      marginTop: 12, padding: '12px 14px', borderRadius: 8,
+      background: T.layer2, border: `1px solid ${T.border}`,
+    }}>
+      <div style={{ color: T.err }}>{t.diverged}</div>
+      <div style={{ color: T.text2, marginTop: 8 }}>{t.divergedAhead(d.ahead, d.upstreamRef)}</div>
+      <div style={{ marginTop: 6, maxHeight: 160, overflowY: 'auto' }}>
+        {d.commits.map((c) => (
+          <div key={c.shortSha} style={{ display: 'flex', gap: 8, padding: '2px 0', fontSize: 12 }}>
+            <code style={{ color: T.text3, flex: 'none' }}>{c.shortSha}</code>
+            <span style={{ color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.subject}
+            </span>
+          </div>
+        ))}
+        {d.truncated && (
+          <div style={{ color: T.text3, fontSize: 12, padding: '2px 0' }}>
+            {t.divergedMore(d.ahead - d.commits.length)}
+          </div>
+        )}
+      </div>
+      <div style={{ color: T.text3, marginTop: 10 }}>
+        {t.realignWhat(BACKUP_BRANCH_SHAPE, d.upstreamRef)}
+      </div>
+      {status.dirty && <div style={{ color: T.err, marginTop: 8 }}>{t.realignDirty}</div>}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+        <button
+          type="button"
+          style={{ ...BTN_PRIMARY, opacity: disabled ? 0.5 : 1 }}
+          disabled={disabled}
+          onClick={onRealign}
+        >
+          {t.realignBtn}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function UpdateAction({ wide }: { wide: boolean }) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
   const [dismissed, setDismissed] = useState<string | undefined>(() => readDismissed())
@@ -166,7 +221,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
     return () => { window.removeEventListener('keydown', onKey) }
   }, [open])
 
-  const act = useCallback(async (action: 'check' | 'install' | 'rollback' | 'restart') => {
+  const act = useCallback(async (action: 'check' | 'install' | 'realign' | 'rollback' | 'restart') => {
     setBusy(true)
     try {
       const next = await postUpdate(action)
@@ -193,6 +248,8 @@ export function UpdateAction({ wide }: { wide: boolean }) {
   const needsRestart = status?.restartRequired === true
   const failed = status?.phase === 'failed' && status.steps.length > 0
   const blocked = status?.dirty === true || status?.diverged === true
+  // 本轮跑的是「备份并对齐远端」而不是普通更新——失败后的重试与成功后的提示都得按它来
+  const wasRealign = status?.steps.some((s) => s.id === 'realign') === true
 
   // 已是最新（外部入口打开弹层时会走到这个形态；侧栏行此时不渲染）
   const upToDate = !installing && !needsRestart && !failed && available === undefined
@@ -304,13 +361,18 @@ export function UpdateAction({ wide }: { wide: boolean }) {
               </div>
             )}
 
-            {blocked && (
+            {status.dirty && !installing && (
               <div style={{
                 marginTop: 12, padding: '10px 12px', borderRadius: 8,
                 background: T.layer2, border: `1px solid ${T.border}`, color: T.err,
               }}>
-                {status.dirty ? t.dirtyBlocked(status.repoRoot) : t.diverged}
+                {t.dirtyBlocked(status.repoRoot)}
               </div>
+            )}
+
+            {/* 非快进：不再只丢一句"无法快进更新"，把分叉摊开并给出唯一一条出路 */}
+            {status.diverged && !installing && !needsRestart && (
+              <DivergedPanel status={status} busy={busy} onRealign={() => { void act('realign') }} />
             )}
 
             {/* 已是最新：外部入口（设置页 / 菜单）打开时的形态 */}
@@ -324,8 +386,8 @@ export function UpdateAction({ wide }: { wide: boolean }) {
               </div>
             )}
 
-            {/* 未开工：把将要发生的事摊开写清楚 */}
-            {!installing && !needsRestart && !failed && available !== undefined && (
+            {/* 未开工：把将要发生的事摊开写清楚。分叉时这三步跑不了，别摆在"无法快进"旁边添乱 */}
+            {!installing && !needsRestart && !failed && !status.diverged && available !== undefined && (
               <div style={{ marginTop: 16 }}>
                 {PLAN.map((p) => (
                   <div key={p.cmd} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
@@ -368,6 +430,9 @@ export function UpdateAction({ wide }: { wide: boolean }) {
             {needsRestart && (
               <div style={{ marginTop: 16, color: T.text2 }}>
                 {t.installedRestart}
+                {wasRealign && status.backupBranch !== undefined && (
+                  <div style={{ color: T.text3, marginTop: 6 }}>{t.backupSaved(status.backupBranch)}</div>
+                )}
               </div>
             )}
 
@@ -385,7 +450,12 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                       {t.rollbackTo(status.previousSha.slice(0, 9))}
                     </button>
                   )}
-                  <button type="button" style={BTN_PRIMARY} disabled={busy} onClick={() => { void act('install') }}>
+                  <button
+                    type="button"
+                    style={BTN_PRIMARY}
+                    disabled={busy}
+                    onClick={() => { void act(wasRealign ? 'realign' : 'install') }}
+                  >
                     {t.retry}
                   </button>
                 </>

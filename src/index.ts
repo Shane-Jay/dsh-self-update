@@ -1,5 +1,5 @@
 // dsh-self-update：DeepSeek Harness 的应用内自更新插件（git 源码安装版）。
-// 服务端半边：Updater（git fetch/pull → pnpm install → pnpm build:official）+ 五条 HTTP 路由。
+// 服务端半边：Updater（git fetch/pull → pnpm install → pnpm build:official）+ 六条 HTTP 路由。
 // 浏览器半边经 exports["./client"] 分发（见 src/client/index.tsx）。
 // ⚠️ 只用 named export（loader unwrapExports 陷阱）。
 
@@ -43,7 +43,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     ctx.effect(() => updater.start())
   }
 
-  // ── /self-update/api/update/*：检查 / 安装 / 回滚 / 重启 ────────────────────
+  // ── /self-update/api/update/*：检查 / 安装 / 对齐远端 / 回滚 / 重启 ─────────
   interface WebReqLike extends AsyncIterable<Uint8Array> {
     url?: string
     method?: string
@@ -115,6 +115,13 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (url.pathname.endsWith('/update/install') && method === 'POST') {
               const started = updater.install()
               void started.catch(() => { /* 失败已落进 state.lastError */ })
+              res.end(JSON.stringify(await updater.status()))
+              return
+            }
+            // 非快进的出路：备份本地提交 → 硬对齐远端 → install/build。与安装同样耗时，同样不 await
+            if (url.pathname.endsWith('/update/realign') && method === 'POST') {
+              const started = updater.realign()
+              void started.catch(() => { /* 同上 */ })
               res.end(JSON.stringify(await updater.status()))
               return
             }

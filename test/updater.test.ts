@@ -1,11 +1,11 @@
 // 自更新：用真 git 仓库跑（不联网），只有 pnpm install/build 换成空跑命令。
-// 覆盖：落后检测 / 快进安装 / 脏工作区拒绝 / 单飞 / 回滚。
+// 覆盖：落后检测 / 快进安装 / 脏工作区拒绝 / 单飞 / 回滚 / 清理旧产物 / 非快进的分叉详情与备份对齐。
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { Updater } from '../src/updater.ts'
+import { Updater, backupStamp } from '../src/updater.ts'
 import { tmpDirTracked } from '../test-support/tmp'
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -205,6 +205,130 @@ describe('Updater：清理旧产物这一步', () => {
     expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'failed', 'skipped'])
     expect(st.lastError).toContain('清理旧产物')
     expect(st.available).toBeUndefined() // HEAD 已快进，别再说"有更新"
+  })
+})
+
+/** 在工作副本上造一个本地独有的提交（远端没有），制造非快进 */
+function commitLocal(work: string, subject: string, marker: string): void {
+  writeFileSync(join(work, marker), marker)
+  git(work, 'add', '.')
+  git(work, 'commit', '-m', subject)
+}
+
+describe('Updater：非快进（本地分叉）', () => {
+  it('status() 报出分叉详情：领先几个提交、每个的短 hash 与标题', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'release 1.1.0')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    commitLocal(work, '本地补丁 A', 'a.txt')
+    commitLocal(work, '本地补丁 B', 'b.txt')
+    await u.check()
+
+    const st = await u.status()
+    expect(st.diverged).toBe(true)
+    expect(st.divergence?.upstreamRef).toBe('origin/master')
+    expect(st.divergence?.ahead).toBe(2)
+    expect(st.divergence?.truncated).toBe(false)
+    // 新→旧
+    expect(st.divergence?.commits.map((c) => c.subject)).toEqual(['本地补丁 B', '本地补丁 A'])
+    for (const c of st.divergence?.commits ?? []) expect(c.shortSha).toMatch(/^[0-9a-f]{7,}$/)
+    expect(st.divergence?.commits[0]?.shortSha)
+      .toBe(git(work, 'rev-parse', '--short', 'HEAD'))
+  })
+
+  it('没分叉时不带 divergence', async () => {
+    const { work } = makeRepos('1.0.0')
+    const st = await new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub }).status()
+    expect(st.diverged).toBe(false)
+    expect(st.divergence).toBeUndefined()
+  })
+
+  it('install() 在分叉时仍然拒绝（出路是 realign，不是偷偷 merge）', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    commitLocal(work, '本地补丁', 'a.txt')
+    await u.check()
+
+    const st = await u.install()
+    expect(st.phase).toBe('failed')
+    expect(st.lastError).toContain('无法快进更新')
+  })
+
+  it('realign() 先把本地提交存成备份分支，再硬对齐远端并重建', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'release 1.1.0')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    commitLocal(work, '本地补丁', 'a.txt')
+    const localHead = git(work, 'rev-parse', 'HEAD')
+    await u.check()
+
+    const st = await u.realign()
+    expect(st.steps.map((s) => s.id)).toEqual(['backup', 'realign', 'install', 'clean', 'build'])
+    expect(st.steps.map((s) => s.state)).toEqual(['ok', 'ok', 'ok', 'ok', 'ok'])
+    expect(st.phase).toBe('ready-to-restart')
+    expect(st.restartRequired).toBe(true)
+
+    // 备份分支存在且正是对齐前的 HEAD —— 本地提交一个都没丢
+    expect(st.backupBranch).toMatch(/^local-backup-\d{8}-\d{6}$/)
+    expect(git(work, 'rev-parse', st.backupBranch!)).toBe(localHead)
+    // 工作副本已经等于远端
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(git(work, 'rev-parse', 'origin/master'))
+    expect(JSON.parse(readFileSync(join(work, 'package.json'), 'utf8')).version).toBe('1.1.0')
+    // 对齐后既不落后也不领先
+    expect(st.available).toBeUndefined()
+    expect(st.diverged).toBe(false)
+    // previousSha 指向对齐前的 HEAD，回滚仍然走得通
+    expect(st.previousSha).toBe(localHead)
+  })
+
+  it('realign() 在工作区脏时拒绝执行：不建分支、不动 HEAD、不丢改动', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    commitLocal(work, '本地补丁', 'a.txt')
+    await u.check()
+    const before = git(work, 'rev-parse', 'HEAD')
+    writeFileSync(join(work, 'dirty.txt'), 'uncommitted')
+
+    const st = await u.realign()
+    expect(st.phase).toBe('failed')
+    expect(st.lastError).toContain('未提交改动')
+    expect(st.steps).toEqual([])
+    expect(st.backupBranch).toBeUndefined()
+    expect(git(work, 'rev-parse', 'HEAD')).toBe(before)
+    expect(readFileSync(join(work, 'dirty.txt'), 'utf8')).toBe('uncommitted')
+    expect(git(work, 'branch', '--list', 'local-backup-*')).toBe('')
+  })
+
+  it('realign() 在没有分叉时拒绝执行（不留无意义的备份分支）', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    await u.check()
+
+    const st = await u.realign()
+    expect(st.phase).toBe('failed')
+    expect(st.lastError).toContain('无需对齐')
+    expect(git(work, 'branch', '--list', 'local-backup-*')).toBe('')
+  })
+
+  it('realign() 与 install() 共用同一把单飞锁', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    commitLocal(work, '本地补丁', 'a.txt')
+    await u.check()
+
+    const first = u.realign()
+    const second = await u.install() // 同步就该被 busy 挡回来，不许并发动 HEAD
+    expect(second.phase).toBe('installing')
+    expect(second.steps.map((s) => s.id)).toEqual(['backup', 'realign', 'install', 'clean', 'build'])
+    expect((await first).phase).toBe('ready-to-restart')
+  })
+
+  it('backupStamp() 是本地时区的 yyyyMMdd-HHmmss', () => {
+    expect(backupStamp(new Date(2026, 7, 28, 9, 5, 3))).toBe('20260828-090503')
   })
 })
 
