@@ -2,7 +2,9 @@
 // ① sidebar.footer.action：侧栏底部「设置」正上方的更新入口（有新版本才浮出）；
 // ② settings.general.item：通用设置里的「DSH 版本」行（手动检查 / 前往更新）。
 // 弹层单源：两个席位 + 外部入口（Mac 外壳菜单）都经 window 事件打开同一个更新页。
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+// Type-only：SlotRegistry 服务 merge（ctx.slots）。
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only：各 slot 声明的 SlotMap merge。
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
