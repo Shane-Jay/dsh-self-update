@@ -332,6 +332,46 @@ describe('Updater：非快进（本地分叉）', () => {
   })
 })
 
+describe('Updater：运行时与磁盘是否一致', () => {
+  it('status().runtime 记下进程起来时的 HEAD；install 后磁盘 HEAD 变了 → stale；新进程起来 → 不再 stale', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    pushUpstream(upstream, '1.1.0', 'x')
+    const u = new Updater({
+      repoRoot: work, checkIntervalMs: 0, commands: stub,
+      runtime: { supervisor: 'none', restartMode: 'self-respawn' },
+    })
+    const bootHead = git(work, 'rev-parse', 'HEAD')
+
+    const before = await u.status()
+    expect(before.runtime.sha).toBe(bootHead)
+    expect(before.runtime.shortSha).toBe(bootHead.slice(0, 9))
+    expect(before.runtime.stale).toBe(false)
+    expect(before.runtime.pid).toBe(process.pid)
+    expect(before.runtime.supervisor).toBe('none')
+    expect(before.runtime.restartMode).toBe('self-respawn')
+
+    await u.check()
+    const after = await u.install()
+    expect(after.runtime.sha).toBe(bootHead)          // 进程没换，起点不变
+    expect(after.current.sha).not.toBe(bootHead)      // 磁盘上已经是新的
+    expect(after.runtime.stale).toBe(true)
+
+    // 模拟重启：新实例的起点就是现在的 HEAD
+    const reborn = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    expect((await reborn.status()).runtime.stale).toBe(false)
+  })
+
+  it('外部改了 HEAD（不经插件）同样报 stale——重启与否看事实，不看谁改的', async () => {
+    const { work, upstream } = makeRepos('1.0.0')
+    const u = new Updater({ repoRoot: work, checkIntervalMs: 0, commands: stub })
+    expect((await u.status()).runtime.stale).toBe(false)
+    pushUpstream(upstream, '1.1.0', 'x')
+    git(work, 'pull', '--ff-only', 'origin', 'master')
+    expect((await u.status()).runtime.stale).toBe(true)
+    expect((await u.status()).restartRequired).toBe(false)
+  })
+})
+
 describe('Updater：安装失败后的状态自洽', () => {
   it('build 步失败时 HEAD 已经快进——available 必须重算，不能还写着落后 N 个提交', async () => {
     const { work, upstream } = makeRepos('1.0.0')

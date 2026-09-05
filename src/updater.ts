@@ -13,6 +13,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { detectSupervisor, resolveRestartMode, type RestartMode, type Supervisor } from './runtime.ts'
 
 /** 退出码约定：桌面壳（scripts/macapp）看到 75 就自动重新拉起服务。 */
 export const RESTART_EXIT_CODE = 75
@@ -33,6 +34,21 @@ export interface UpdaterOptions {
    * clean 只在目标仓库 package.json 里确实有 "clean" script 时才执行（旧版本 harness 没有）。
    */
   commands?: { install?: string[]; clean?: string[]; build?: string[] }
+  /** 托管方与重启方式；缺省从环境推断（见 runtime.ts）。测试里用它钉死结果。 */
+  runtime?: { supervisor?: Supervisor; restartMode?: RestartMode }
+}
+
+/** 运行中这个进程的事实：从哪个提交起来的、与磁盘是否一致、谁负责拉起 */
+export interface RuntimeInfo {
+  pid: number
+  startedAt: string
+  /** 进程启动时工作副本的 HEAD */
+  sha: string
+  shortSha: string
+  /** 磁盘上的 HEAD 已不是进程起来时那个——不管是谁改的，都得重启才生效 */
+  stale: boolean
+  supervisor: Supervisor
+  restartMode: RestartMode
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'installing' | 'ready-to-restart' | 'failed'
@@ -96,6 +112,7 @@ export interface UpdateStatus {
   previousSha?: string
   /** 最近一次「备份并对齐远端」创建的备份分支名 */
   backupBranch?: string
+  runtime: RuntimeInfo
 }
 
 /** install/rollback 里一条待执行的命令。needsScript：目标仓库缺这个 script 就跳过该步。 */
@@ -166,6 +183,11 @@ export class Updater {
   private branch: string
   private timer: NodeJS.Timeout | undefined
   private busy = false
+  /** 进程起来那一刻的 HEAD：之后磁盘上的 HEAD 一变，status 里就报 stale */
+  private readonly bootSha: Promise<string>
+  private readonly startedAt = new Date().toISOString()
+  readonly supervisor: Supervisor
+  readonly restartMode: RestartMode
 
   private state: {
     phase: UpdatePhase
@@ -187,6 +209,9 @@ export class Updater {
     this.cleanCmd = opts.commands?.clean ?? ['pnpm', 'clean']
     this.buildCmd = opts.commands?.build ?? ['pnpm', 'build:official']
     this.stateFile = opts.stateFile
+    this.supervisor = opts.runtime?.supervisor ?? detectSupervisor()
+    this.restartMode = opts.runtime?.restartMode ?? resolveRestartMode(this.supervisor)
+    this.bootSha = this.gitOut(['rev-parse', 'HEAD'])
     this.restore()
   }
 
@@ -287,7 +312,19 @@ export class Updater {
     const aheadRaw = await this.gitOut(['rev-list', '--count', `${this.upstreamRef}..HEAD`])
     const ahead = Number(aheadRaw || '0')
     const diverged = Number.isFinite(ahead) && ahead > 0
+    const bootSha = await this.bootSha
+    const runtime: RuntimeInfo = {
+      pid: process.pid,
+      startedAt: this.startedAt,
+      sha: bootSha,
+      shortSha: bootSha.slice(0, 9),
+      // 起来时就拿不到 HEAD（不是 git 仓库）就别报 stale，免得界面一直催重启
+      stale: bootSha !== '' && current.sha !== '' && bootSha !== current.sha,
+      supervisor: this.supervisor,
+      restartMode: this.restartMode,
+    }
     return {
+      runtime,
       phase: this.state.phase,
       repoRoot: this.repoRoot,
       branch: this.branch,

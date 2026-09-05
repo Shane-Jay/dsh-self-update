@@ -26,7 +26,8 @@
 - **工作区有未提交改动时拒绝更新**——绝不替你丢改动；
 - **本地分叉不再是死路**：更新页列出本地独有的提交，一键「备份并对齐远端」——先把你的提交存成 `local-backup-<时间戳>` 分支，再硬对齐远端继续更新（工作区脏时拒绝执行）；
 - 失败时**一键回滚**（UI 挂掉时还有命令行兜底）；
-- **重启闭环**：进程以**退出码 75** 退出（"请重启我"），由 systemd / PM2 / 自带 macOS 外壳自动拉起。
+- **认得出「进程已过期」**：进程起来时就记下检出的 HEAD，之后磁盘上的代码一往前走——自己装的、你手动 `git pull` 的、别的工具改的都算——界面直接报**「需重启」**，而不是悄悄用新前端配旧宿主；
+- **重启闭环**：进程以**退出码 75** 退出（"请重启我"），交给 systemd / PM2 / 自带 macOS 外壳拉起；**一个 supervisor 都没有**时，macOS/Linux 上它会自己派生副本接管——裸终端里的 `pnpm dsh web` 也能「立即重启」。
 
 **不适用于你，如果**你是 `npm i -g @deepseek-ai/dsh` 全局安装的：没有 git 工作副本可更新，本插件会整体自动隐藏。请改用 npm 系更新器（如 `dsh-update-checker`）。
 
@@ -48,11 +49,15 @@ pnpm dsh plugin --profile web add dsh-self-update
 | systemd | `RestartForceExitStatus=75` |
 | PM2 | `autorestart: true`（默认即可） |
 | macOS 外壳（见下） | 内置 |
-| 裸终端 | 自己再跑一次 `pnpm dsh web` |
+| 裸终端 / 没有 supervisor | 内置（macOS/Linux 自拉起；Windows 手动） |
+
+没探到 supervisor 时，插件会先派生一个分离的 `/bin/sh` 助手：等旧 pid 真的死掉（端口释放）后，用完全相同的 node 命令行 exec 一份自己——裸终端跑的 `pnpm dsh web`、乃至孤儿进程，都能自己起回来。Windows 没有这条路：按钮改叫**「停止服务」**，之后请手动再跑一次 `pnpm dsh web`。更新页会写明这三种里将发生哪一种。
+
+探测顺序：先看 `DSH_SELF_UPDATE_SUPERVISOR`，再认 systemd 的 `INVOCATION_ID`，再认 PM2 的 `pm_id`/`PM2_HOME`。**如果你的 supervisor 本来就认退出码 75，请把 `DSH_SELF_UPDATE_SUPERVISOR` 设成任意值（如 `custom`）**——否则插件会背着它自拉起。`none`/`0`/`false` 表示相反的意思：没人会拉起我。
 
 ## macOS 外壳（可选）
 
-原生 Swift + WKWebView（非 Electron）的 DSH.app，托管 dsh 服务：点图标即界面，关窗不停服务，⌘Q 才停。菜单栏有 **「检查更新…」**，直接弹出应用内更新页；服务以 75 退出时自动拉起并重载页面。已适配 harness 0.1.2 引入的 web 鉴权：外壳自动抓取服务启动时打印的带 token URL，内嵌页面无需手动登录。
+原生 Swift + WKWebView（非 Electron）的 DSH.app，托管 dsh 服务：点图标即界面，关窗不停服务，⌘Q 才停。菜单栏有 **「检查更新…」**，直接弹出应用内更新页；服务以 75 退出时自动拉起并重载页面（拉起时设 `DSH_SELF_UPDATE_SUPERVISOR=macapp`，插件据此把重启交给外壳）。对**接管**来的服务（端口上已在监听、并非外壳启动的那种）现在也守着：它一旦消失，外壳先等 45 秒看它是否自己回来（自拉起的情形），否则就起一份自己的并接管。已适配 harness 0.1.2 引入的 web 鉴权：外壳自动抓取服务启动时打印的带 token URL，内嵌页面无需手动登录。
 
 ```bash
 node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具
@@ -67,7 +72,7 @@ node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具
 |---|---|---|---|
 | `dsh-update-checker` | npm 包 | 重启仅 Windows | ✅（Win） |
 | `dsh-update-copilot` | 插件为主，core 只报告 | 全平台 | ❌ |
-| **`dsh-self-update`** | **harness git 工作副本本体** | **全平台（重启含 macOS/Linux）** | **✅（退出码 75 契约）** |
+| **`dsh-self-update`** | **harness git 工作副本本体** | **全平台（重启含 macOS/Linux）** | **✅（退出码 75；macOS/Linux 无需 supervisor）** |
 
 退出码 75 的重启契约正是社区一直在向 harness core 呼吁的东西（见上游讨论 [#1231](https://github.com/deepseek-ai/deepseek-harness/discussions/1231)、[#2717](https://github.com/deepseek-ai/deepseek-harness/discussions/2717)）——本插件是它的一个可用实现。
 
@@ -75,8 +80,9 @@ node macapp/build-mac-app.mjs        # 需要 Xcode 命令行工具
 
 - **HTTP** — `/self-update/api/update/{status,check,install,realign,rollback,restart}`；写路由要求 `Content-Type: application/json` + 本机 `Origin`（CSRF 防线）。
 - **弹层事件** — 在 `window` 上派发 `dsh-self-update:open`（`detail: { check: true }` = 打开即检查）。macOS 菜单项就是通过 `evaluateJavaScript` 派发它。
-- **重启** — 进程退出码 **75** = 请求重启；其他退出码一律按崩溃处理。
-- **状态** — 落盘 `~/.dsh-self-update/update-state.json`。
+- **运行时** — `GET /update/status` 带 `runtime: { pid, startedAt, sha, shortSha, stale, supervisor, restartMode }`。`stale` = 磁盘上的 HEAD 已不是本进程启动时那个（界面按「已装好、待重启」处理）；`supervisor` ∈ `macapp | systemd | pm2 | custom | none`；`restartMode` ∈ `supervisor | self-respawn | manual`。
+- **重启** — `POST /update/restart` 先答 `{ ok, mode, exitCode }`，约 300ms 后才退出；`mode` 即上面的 `restartMode`。退出码 **75** = 请求重启，其他一律按崩溃处理。之后浏览器轮询 status，只有**换了 pid** 才刷新（最多等 120 秒）。
+- **状态** — 落盘 `~/.dsh-self-update/update-state.json`；自拉起助手的输出在 `~/.dsh-self-update/respawn.log`。
 
 ## UI 挂掉时的兜底
 

@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import { fetchUpdateStatus, postUpdate, type UpdateStatus } from './api.ts'
 import { openUpdatePanel } from './UpdateAction.tsx'
-import { tr } from './i18n.ts'
+import { fmtTime, tr } from './i18n.ts'
 
 const T = {
   text: 'var(--dsw-alias-label-primary)',
@@ -36,13 +36,18 @@ export function UpdateSettingsRow() {
   }
 
   const t = tr()
+  // 待重启（刚装完，或磁盘 HEAD 已不是运行中的那个）与有新版本一样，都把人引到更新页去
+  const needsRestart = st.restartRequired || (st.runtime?.stale === true && st.phase !== 'installing')
   const hasUpdate = st.available !== undefined
+  const attention = hasUpdate || needsRestart
 
-  const sub = st.available !== undefined
-    ? t.settingsNew(st.available.version, st.available.behind)
-    : st.lastCheckedAt !== undefined
-      ? t.settingsUpToDateAt(new Date(st.lastCheckedAt).toLocaleString())
-      : t.settingsUpToDate
+  const sub = needsRestart
+    ? t.settingsRestart
+    : st.available !== undefined
+      ? t.settingsNew(st.available.version, st.available.behind)
+      : st.lastCheckedAt !== undefined
+        ? t.settingsUpToDateAt(fmtTime(st.lastCheckedAt))
+        : t.settingsUpToDate
 
   return (
     <div style={{
@@ -51,23 +56,23 @@ export function UpdateSettingsRow() {
     }}>
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, paddingRight: 48 }}>
         <div style={{ fontSize: 14, lineHeight: '22px', color: T.text }}>{t.settingsTitle}</div>
-        <div style={{ fontSize: 13, lineHeight: '20px', color: st.available !== undefined ? T.brand : T.text3 }}>
+        <div style={{ fontSize: 13, lineHeight: '20px', color: attention ? T.brand : T.text3 }}>
           {st.current.version}　·　{sub}
         </div>
       </div>
       <button
         type="button"
         disabled={checking}
-        onClick={() => { if (hasUpdate) openUpdatePanel(); else void check() }}
+        onClick={() => { if (attention) openUpdatePanel(); else void check() }}
         style={{
           display: 'inline-flex', alignItems: 'center', height: 36, padding: '0 14px',
           border: 'none', borderRadius: 18,
-          background: hasUpdate ? T.brand : T.pill,
-          color: hasUpdate ? 'var(--dsw-alias-label-primary-foreground)' : T.text,
+          background: attention ? T.brand : T.pill,
+          color: attention ? 'var(--dsw-alias-label-primary-foreground)' : T.text,
           font: 'inherit', fontSize: 14, lineHeight: '22px', cursor: checking ? 'default' : 'pointer',
         }}
       >
-        {checking ? t.checkingBtn : hasUpdate ? t.goUpdate : t.checkBtn}
+        {checking ? t.checkingBtn : needsRestart ? t.goRestart : hasUpdate ? t.goUpdate : t.checkBtn}
       </button>
     </div>
   )

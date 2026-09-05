@@ -7,8 +7,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { fetchUpdateStatus, postUpdate, type UpdateStatus } from './api.ts'
-import { stepLabel, tr } from './i18n.ts'
+import { fetchUpdateStatus, postRestart, postUpdate, waitForServer, type UpdateStatus } from './api.ts'
+import { fmtTime, stepText, tr } from './i18n.ts'
 
 const DISMISS_KEY = 'dsh-self-update.dismissedSha'
 
@@ -105,12 +105,24 @@ function StepDot({ state }: { state: string }) {
   )
 }
 
-const PLAN = [
-  { cmd: 'git pull --ff-only', why: 'pull' },
-  { cmd: 'pnpm install', why: 'install' },
-  { cmd: 'pnpm clean', why: 'clean' },
-  { cmd: 'pnpm build:official', why: 'build' },
-] as const
+/** 普通更新会跑的四步（未开工时先摊出来给人看） */
+const PLAN_IDS = ['pull', 'install', 'clean', 'build'] as const
+
+/** 一行步骤：指示圈 + 短名 + 弱化的实际命令。计划态与进行态共用，不会跳版。 */
+function StepRow({ id, state, fallback }: { id: string; state: string; fallback?: string }) {
+  const [name, cmd] = stepText(id, fallback ?? id)
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0', minWidth: 0 }}>
+      <StepDot state={state} />
+      <span style={{ color: state === 'pending' ? T.text3 : T.text2, flex: 'none' }}>{name}</span>
+      {cmd !== '' && (
+        <code style={{ color: T.text3, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {cmd}
+        </code>
+      )}
+    </div>
+  )
+}
 
 /** 版本对照块：当前 → 目标 */
 function VersionCompare({ status }: { status: UpdateStatus }) {
@@ -202,17 +214,21 @@ export function UpdateAction({ wide }: { wide: boolean }) {
   const [dismissed, setDismissed] = useState<string | undefined>(() => readDismissed())
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  // 重启进行中：旧进程退出 → 新进程接管端口 → 整页刷新。期间弹层锁住，不再轮询。
+  const [restarting, setRestarting] = useState(false)
+  const [restartError, setRestartError] = useState<string | undefined>(undefined)
   const timer = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
 
   const refresh = useCallback(async () => { setStatus(await fetchUpdateStatus()) }, [])
 
   // 安装中/弹层开着 2 秒一轮，平时 5 分钟一轮（真正的定期检查在后端）
   useEffect(() => {
+    if (restarting) return
     void refresh()
     const fast = open || status?.phase === 'installing'
     timer.current = setInterval(() => { void refresh() }, fast ? 2000 : 300_000)
     return () => { if (timer.current !== undefined) clearInterval(timer.current) }
-  }, [refresh, open, status?.phase])
+  }, [refresh, open, status?.phase, restarting])
 
   useEffect(() => {
     if (!open) return
@@ -221,16 +237,37 @@ export function UpdateAction({ wide }: { wide: boolean }) {
     return () => { window.removeEventListener('keydown', onKey) }
   }, [open])
 
-  const act = useCallback(async (action: 'check' | 'install' | 'realign' | 'rollback' | 'restart') => {
+  const act = useCallback(async (action: 'check' | 'install' | 'realign' | 'rollback') => {
     setBusy(true)
     try {
       const next = await postUpdate(action)
       if (next !== undefined) setStatus(next)
-      if (action === 'restart') setTimeout(() => { window.location.reload() }, 4000)
     } finally {
       setBusy(false)
     }
   }, [])
+
+  // 重启不是"发个请求等 4 秒刷新"：自拉起要等旧进程退出、新进程编译启动，可能十几秒；
+  // 只认新 pid 出现才刷新，超时或被拒就把原因摆出来，弹层解锁。
+  const restart = useCallback(async () => {
+    const oldPid = status?.runtime.pid
+    setRestarting(true)
+    setRestartError(undefined)
+    const r = await postRestart()
+    if (!r.ok) {
+      setRestartError(r.error ?? r.mode)
+      setRestarting(false)
+      return
+    }
+    if (r.mode === 'manual') return // 进程会退出且没人拉起；页面留在这一态，提示已在面板上
+    const back = oldPid === undefined ? false : await waitForServer(oldPid)
+    if (back) {
+      window.location.reload()
+      return
+    }
+    setRestartError('timeout')
+    setRestarting(false)
+  }, [status?.runtime.pid])
 
   // 外部入口事件：打开弹层，按需立即检查
   useEffect(() => {
@@ -245,8 +282,11 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
   const available = status?.available
   const installing = status?.phase === 'installing'
-  const needsRestart = status?.restartRequired === true
   const failed = status?.phase === 'failed' && status.steps.length > 0
+  // 两种情况都要重启：本插件刚装完（restartRequired），或者磁盘上的 HEAD 已经不是
+  // 进程起来时那个（stale——不管是谁改的）。安装中/失败态优先，别抢它们的版面。
+  const stale = status?.runtime?.stale === true && !installing && !failed
+  const needsRestart = status?.restartRequired === true || stale
   const blocked = status?.dirty === true || status?.diverged === true
   // 本轮跑的是「备份并对齐远端」而不是普通更新——失败后的重试与成功后的提示都得按它来
   const wasRealign = status?.steps.some((s) => s.id === 'realign') === true
@@ -269,7 +309,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
   const t = tr()
   const rowLabel = needsRestart
-    ? t.rowInstalled
+    ? (status?.restartRequired === true ? t.rowInstalled : t.rowStale)
     : installing
       ? t.rowInstalling
       : failed
@@ -321,7 +361,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
           role="dialog"
           aria-modal="true"
           aria-label={t.dialogTitle}
-          onClick={() => { if (!installing) setOpen(false) }}
+          onClick={() => { if (!installing && !restarting) setOpen(false) }}
           style={{
             position: 'fixed', inset: 0, zIndex: 1200, // harness 弹窗层是 1000，必须压过它
 
@@ -356,7 +396,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
               <div style={{ color: T.text2, marginTop: 12 }}>
                 <span style={{ color: T.text3 }}>{t.latestCommit}　</span>{available.subject}
                 {available.committedAt !== undefined && (
-                  <span style={{ color: T.text3 }}>　·　{new Date(available.committedAt).toLocaleString()}</span>
+                  <span style={{ color: T.text3 }}>　·　{fmtTime(available.committedAt)}</span>
                 )}
               </div>
             )}
@@ -381,7 +421,7 @@ export function UpdateAction({ wide }: { wide: boolean }) {
                 {busy
                   ? t.checking
                   : status.lastCheckedAt !== undefined
-                    ? t.upToDateAt(new Date(status.lastCheckedAt).toLocaleString())
+                    ? t.upToDateAt(fmtTime(status.lastCheckedAt))
                     : t.upToDate}
               </div>
             )}
@@ -389,27 +429,14 @@ export function UpdateAction({ wide }: { wide: boolean }) {
             {/* 未开工：把将要发生的事摊开写清楚。分叉时这三步跑不了，别摆在"无法快进"旁边添乱 */}
             {!installing && !needsRestart && !failed && !status.diverged && available !== undefined && (
               <div style={{ marginTop: 16 }}>
-                {PLAN.map((p) => (
-                  <div key={p.cmd} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
-                    <StepDot state="pending" />
-                    <code style={{ color: T.text, fontSize: 12, flex: 'none' }}>{p.cmd}</code>
-                    <span style={{ color: T.text3, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {t.planWhy[p.why]}
-                    </span>
-                  </div>
-                ))}
+                {PLAN_IDS.map((id) => <StepRow key={id} id={id} state="pending" />)}
               </div>
             )}
 
             {/* 进行中 / 已失败：实时步骤 */}
             {(installing || failed) && status.steps.length > 0 && (
               <div style={{ marginTop: 16 }}>
-                {status.steps.map((s) => (
-                  <div key={s.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '5px 0' }}>
-                    <StepDot state={s.state} />
-                    <span style={{ color: s.state === 'pending' ? T.text3 : T.text2 }}>{stepLabel(s.id, s.label)}</span>
-                  </div>
-                ))}
+                {status.steps.map((s) => <StepRow key={s.id} id={s.id} state={s.state} fallback={s.label} />)}
                 {installing && (
                   <div style={{ color: T.text3, marginTop: 8 }}>{t.dontQuit}</div>
                 )}
@@ -429,17 +456,32 @@ export function UpdateAction({ wide }: { wide: boolean }) {
 
             {needsRestart && (
               <div style={{ marginTop: 16, color: T.text2 }}>
-                {t.installedRestart}
+                {status.restartRequired
+                  ? t.installed
+                  : t.stale(status.runtime.shortSha, status.current.shortSha)}
+                <div style={{ color: T.text3, marginTop: 6 }}>
+                  {t.restartBy[status.runtime?.restartMode ?? 'supervisor']}
+                </div>
                 {wasRealign && status.backupBranch !== undefined && (
                   <div style={{ color: T.text3, marginTop: 6 }}>{t.backupSaved(status.backupBranch)}</div>
+                )}
+                {restartError !== undefined && (
+                  <div style={{ color: T.err, marginTop: 6 }}>{t.restartFailed(restartError)}</div>
                 )}
               </div>
             )}
 
             <div style={{ display: 'flex', gap: 8, marginTop: 20, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
               {needsRestart ? (
-                <button type="button" style={BTN_PRIMARY} disabled={busy} onClick={() => { void act('restart') }}>
-                  {t.restartNow}
+                <button
+                  type="button"
+                  style={{ ...BTN_PRIMARY, opacity: restarting ? 0.6 : 1 }}
+                  disabled={busy || restarting}
+                  onClick={() => { void restart() }}
+                >
+                  {restarting
+                    ? t.restarting
+                    : status.runtime?.restartMode === 'manual' ? t.restartManual : t.restartNow}
                 </button>
               ) : installing ? (
                 <span style={{ color: T.text3, alignSelf: 'center' }}>{t.updating}</span>

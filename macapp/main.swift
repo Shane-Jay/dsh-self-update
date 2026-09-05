@@ -47,6 +47,9 @@ final class ServerController {
         case starting
         /// Server asked to be restarted by the in-app updater.
         case restarting
+        /// A server we did not start went away; waiting for it to come back
+        /// before we start our own.
+        case relaunching
         case ready
         case failed(String)
         case exited
@@ -55,6 +58,8 @@ final class ServerController {
     private let cfg: AppConfig
     private var process: Process?
     private var pollTimer: Timer?
+    /// Health watch for a server we adopted but do not own.
+    private var adoptWatch: Timer?
     private var deadline = Date.distantPast
     private var stopping = false
     private var lastSpawnAt = Date.distantPast
@@ -87,10 +92,52 @@ final class ServerController {
         probe { [weak self] up in
             guard let self else { return }
             if up {
-                self.owned = false
-                self.state = .ready
+                self.adopt()
             } else {
                 self.spawn()
+            }
+        }
+    }
+
+    /// 接管一个别人启动的服务：我们不能杀它，但要盯着它。
+    private func adopt() {
+        owned = false
+        state = .ready
+        watchAdopted()
+    }
+
+    /// 被接管的服务可能被自更新重启（退出码 75 后自行重新拉起），也可能直接没了。
+    /// 每 5 秒探一次；掉线就进入 relaunching 等它回来。
+    private func watchAdopted() {
+        adoptWatch?.invalidate()
+        adoptWatch = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] timer in
+            guard let self, !self.stopping else { timer.invalidate(); return }
+            self.probe { up in
+                guard !self.stopping else { timer.invalidate(); return }
+                if !up { timer.invalidate(); self.awaitRelaunch() }
+            }
+        }
+    }
+
+    /// 等被接管的服务自己回来（插件在没有 supervisor 时会 re-spawn，约 5–30 秒）；
+    /// 45 秒还没监听就自己起一个，从此归本壳所有。
+    private func awaitRelaunch() {
+        adoptWatch?.invalidate()
+        state = .relaunching
+        deadline = Date().addingTimeInterval(45)
+
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self, !self.stopping else { timer.invalidate(); return }
+            self.probe { up in
+                guard !self.stopping else { timer.invalidate(); return }
+                if up {
+                    timer.invalidate()
+                    self.adopt()
+                } else if Date() > self.deadline {
+                    timer.invalidate()
+                    self.spawn()
+                }
             }
         }
     }
@@ -103,6 +150,7 @@ final class ServerController {
     }
 
     private func spawn() {
+        adoptWatch?.invalidate()
         let fm = FileManager.default
         fm.createFile(atPath: cfg.logPath, contents: nil)
         guard let log = FileHandle(forWritingAtPath: cfg.logPath) else {
@@ -115,6 +163,8 @@ final class ServerController {
         env["PATH"] = "\(nodeDir):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["HOME"] = fm.homeDirectoryForCurrentUser.path
         if env["LANG"] == nil { env["LANG"] = "zh_CN.UTF-8" }
+        // 更新器据此判断：退出码 75 后有外壳负责重新拉起，它自己不必 re-spawn。
+        env["DSH_SELF_UPDATE_SUPERVISOR"] = "macapp"
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: cfg.nodeBin)
@@ -174,6 +224,7 @@ final class ServerController {
     func stop() {
         stopping = true
         pollTimer?.invalidate()
+        adoptWatch?.invalidate()
         guard owned, let p = process, p.isRunning else { return }
         p.terminate()
         let limit = Date().addingTimeInterval(5)
@@ -382,6 +433,10 @@ final class MainWindowController: NSWindowController, WKNavigationDelegate, WKUI
         case .restarting:
             loadedOnce = false
             overlay.show(busy: true, text: L("更新已装好，正在重启 DSH 服务…", "Update installed, restarting DSH service…"), log: nil)
+        case .relaunching:
+            // 服务不是我们起的，等它自己回来；loadedOnce 归零，回到 ready 时会重新载入页面。
+            loadedOnce = false
+            overlay.show(busy: true, text: L("DSH 服务已退出，等待其重新拉起…", "DSH service exited, waiting for it to come back…"), log: nil)
         case .ready:
             overlay.isHidden = true
             if !loadedOnce {

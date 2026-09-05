@@ -7,6 +7,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { RESTART_EXIT_CODE, Updater } from './updater.ts'
+import { spawnRespawner } from './runtime.ts'
 import type { Context } from '@deepseek-ai/cordis'
 
 export const name = 'self-update'
@@ -24,10 +25,10 @@ export interface Config {
 
 export function apply(ctx: Context, config: Config = {}): void {
   const harnessRoot = config.repoRoot ?? process.cwd()
+  const dataDir = config.dataDir ?? join(homedir(), '.dsh-self-update')
   // 只有目标确实是 git 工作副本才挂（npm 全局装的 dsh 没有工作副本 → 路由 404、UI 不渲染）
   const updater = existsSync(join(harnessRoot, '.git'))
     ? (() => {
-        const dataDir = config.dataDir ?? join(homedir(), '.dsh-self-update')
         mkdirSync(dataDir, { recursive: true })
         return new Updater({
           repoRoot: harnessRoot,
@@ -132,8 +133,21 @@ export function apply(ctx: Context, config: Config = {}): void {
               return
             }
             if (url.pathname.endsWith('/update/restart') && method === 'POST') {
-              res.end(JSON.stringify({ ok: true, exitCode: RESTART_EXIT_CODE }))
-              // 让响应先落地再退出；supervisor / 桌面壳看到 75 会自动把服务拉起来
+              // 谁来拉起由 restartMode 决定：有 supervisor 就只管以 75 退出；
+              // 没有就先派生一份等端口释放后接管的自己，再退出——派生失败则不退出，
+              // 否则用户面对的是一个谁也不会拉起的空端口。
+              let mode = updater.restartMode
+              if (mode === 'self-respawn') {
+                try {
+                  spawnRespawner(join(dataDir, 'respawn.log'))
+                } catch (err) {
+                  res.statusCode = 500
+                  res.end(JSON.stringify({ ok: false, mode: 'manual', error: `自拉起副本派生失败：${String(err)}` }))
+                  return
+                }
+              }
+              res.end(JSON.stringify({ ok: true, mode, exitCode: RESTART_EXIT_CODE }))
+              // 让响应先落地再退出
               setTimeout(() => process.exit(RESTART_EXIT_CODE), 300).unref?.()
               return
             }
